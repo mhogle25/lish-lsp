@@ -20,9 +20,14 @@ The binary lands at `zig-out/bin/lish-lsp`.
 
 Early. Tracking against the B2 milestone in lish-zig's roadmap:
 
-- [ ] B2.1 — JSON-RPC framing
-- [ ] B2.2 — initialize / shutdown handshake
-- [ ] B2.3 — Document sync
-- [ ] B2.4 — Diagnostics from parser errors
-- [ ] B2.5 — Semantic tokens
-- [ ] B2.6 — Editor configs (Neovim + VS Code)
+- [x] B2.1 — JSON-RPC framing
+- [x] B2.2 — initialize / shutdown handshake
+- [x] B2.3 — Document sync
+- [x] B2.4 — Diagnostics from parser errors
+- [x] B2.5 — Semantic tokens
+- [x] B2.6 — Editor configs (Neovim + VS Code)
+
+## Editors
+
+- **Neovim:** see [`editors/nvim/`](editors/nvim/). Drop-in Lua snippet for Neovim 0.10+.
+- **VS Code:** see [`editors/vscode/`](editors/vscode/). Build with `npm install && npm run compile`, then `F5` to launch a dev host.
