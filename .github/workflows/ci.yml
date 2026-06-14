@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: lish-lsp
+    runs-on: ubuntu-latest
+    steps:
+      # lish-lsp's build.zig.zon pins `.lish = .path "../lish-zig"`, so lish-zig
+      # must sit beside it. Tests against lish-zig's main branch.
+      - name: Checkout lish-lsp
+        uses: actions/checkout@v4
+        with:
+          path: lish-lsp
+      - name: Checkout lish-zig
+        uses: actions/checkout@v4
+        with:
+          repository: mhogle25/lish-zig
+          path: lish-zig
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: zig build test
+        working-directory: lish-lsp
+        run: zig build test
