@@ -1,35 +1,47 @@
-//! `textDocument/completion`: vocabulary-name completion.
+//! `textDocument/completion`.
 //!
-//! This first pass completes *callable names* — builtins, stdlib/host macros,
-//! and workspace macros (from the go-to-definition index) — filtered by the word
-//! prefix under the cursor. Each item carries its kind (keyword/function/macro),
-//! the call signature as detail, and the description as documentation.
+//! In callable position, completes *vocabulary names* — builtins, stdlib/host
+//! macros, and workspace macros (from the go-to-definition index) — by the word
+//! prefix under the cursor (pure byte scanning, robust mid-edit), each carrying
+//! its kind, signature, and description. Suppressed inside a string/comment.
 //!
-//! Resolution is pure byte scanning, no parse: the word prefix is the run of
-//! identifier bytes ending at the cursor, and completion is suppressed inside a
-//! string or comment and immediately after a `:`/`~` (scope references and
-//! deferred parameters are a separate, not-yet-built feature). Working off raw
-//! bytes keeps completion robust while the surrounding expression is mid-edit
-//! and not yet parseable.
+//! After a `:`, completes the *names in scope* (`scope.zig`): the bindings of the
+//! enclosing `let`/`map`/`pipe`/... forms plus, in a `.lishmacro` body, the macro
+//! head parameters. After a `~` (a deferred-parameter definition) nothing fires.
 
 const std = @import("std");
 const lish = @import("lish");
 const lish_registry = @import("lish_registry.zig");
 const workspace_index = @import("workspace_index.zig");
+const scope = @import("scope.zig");
 
 const Allocator = std.mem.Allocator;
 const LishRegistry = lish_registry.LishRegistry;
 const WorkspaceIndex = workspace_index.WorkspaceIndex;
+const Language = @import("semantic_tokens.zig").Language;
 const token = lish.token;
 
-/// A completion suggestion. `kind` mirrors the operator classification; the
-/// server maps it to an LSP `CompletionItemKind`.
+/// What a completion item is. The server maps it to an LSP `CompletionItemKind`.
+pub const Kind = enum { keyword, function, macro, variable };
+
+/// A completion suggestion. `snippet` is the LSP snippet body inserted on accept
+/// (placeholders for parameters); for a binding it is just the bare name.
 pub const Item = struct {
     label: []const u8,
-    kind: lish_registry.OperatorClass,
+    kind: Kind,
     detail: []const u8,
     documentation: []const u8,
+    snippet: []const u8,
 };
+
+fn kindOf(class: lish_registry.OperatorClass) Kind {
+    return switch (class) {
+        .keyword => .keyword,
+        .function => .function,
+        .macro => .macro,
+        .unknown => .variable,
+    };
+}
 
 /// The completions for a request, plus the byte offset where the replaced word
 /// begins (the server turns `[replace_start, cursor)` into the edit range so a
@@ -41,23 +53,25 @@ pub const Result = struct {
 };
 
 /// Compute the completions at byte offset `cursor`, or null if completion should
-/// not fire here (inside a string/comment, or right after a `:`/`~`).
+/// not fire here (inside a string/comment, or right after a `~`).
 pub fn collect(
     source: []const u8,
     cursor: u32,
     registry: *LishRegistry,
     index: ?*const WorkspaceIndex,
+    language: Language,
     allocator: Allocator,
 ) Allocator.Error!?Result {
     if (inStringOrComment(source, cursor)) return null;
 
     const replace_start = wordStart(source, cursor);
 
-    // A word behind a `:` is a scope reference and behind a `~` a deferred
-    // parameter: neither is a vocabulary position.
+    // A word behind `~` is a deferred-parameter definition (nothing to suggest);
+    // behind `:` it is a scope reference, completed from the names in scope.
     if (replace_start > 0) {
         const before = source[replace_start - 1];
-        if (before == token.SCOPE_THUNK or before == token.DEFERRED) return null;
+        if (before == token.DEFERRED) return null;
+        if (before == token.SCOPE_THUNK) return scopeCompletion(source, cursor, replace_start, registry, language, allocator);
     }
 
     const prefix = source[replace_start..cursor];
@@ -78,9 +92,10 @@ pub fn collect(
         try seen.put(allocator, candidate.name, {});
         try items.append(allocator, .{
             .label = candidate.name,
-            .kind = candidate.class,
+            .kind = kindOf(candidate.class),
             .detail = candidate.detail,
             .documentation = candidate.documentation,
+            .snippet = candidate.snippet,
         });
     }
 
@@ -96,10 +111,60 @@ pub fn collect(
                 .kind = .macro,
                 .detail = entry.value_ptr.signature,
                 .documentation = "",
+                .snippet = entry.value_ptr.snippet,
             });
         }
     }
 
+    return .{ .items = try items.toOwnedSlice(allocator), .replace_start = replace_start };
+}
+
+/// Completion right after a `:` — the names in scope at the cursor. In an
+/// expression that is the bindings of the enclosing `let`/`map`/`pipe`/... forms;
+/// in a `.lishmacro` body it also includes the enclosing macro's head parameters.
+fn scopeCompletion(
+    source: []const u8,
+    cursor: u32,
+    replace_start: u32,
+    registry: *LishRegistry,
+    language: Language,
+    allocator: Allocator,
+) Allocator.Error!?Result {
+    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer names.deinit(allocator);
+
+    switch (language) {
+        .expression => {
+            const root = try lish.parser.parse(allocator, source);
+            try scope.collectInto(root, cursor, registry, &names, allocator);
+        },
+        .macro => {
+            const module = try lish.macro_parser.parseMacroModule(allocator, source);
+            for (module.macros) |node| {
+                const macro = switch (node) {
+                    .macro => |m| m,
+                    .err => continue,
+                };
+                if (cursor < macro.body.position.start or cursor > macro.body.position.end) continue;
+                for (macro.parameters) |param_node| {
+                    const param = switch (param_node) {
+                        .valid => |p| p,
+                        .err => continue,
+                    };
+                    try scope.appendUnique(&names, param.id, allocator);
+                }
+                try scope.collectInto(macro.body, cursor, registry, &names, allocator);
+            }
+        },
+    }
+
+    const prefix = source[replace_start..cursor];
+    var items: std.ArrayListUnmanaged(Item) = .empty;
+    errdefer items.deinit(allocator);
+    for (names.items) |name| {
+        if (!std.mem.startsWith(u8, name, prefix)) continue;
+        try items.append(allocator, .{ .label = name, .kind = .variable, .detail = "", .documentation = "", .snippet = name });
+    }
     return .{ .items = try items.toOwnedSlice(allocator), .replace_start = replace_start };
 }
 
@@ -174,7 +239,7 @@ test "completes a builtin prefix in operator position" {
     defer registry.deinit();
 
     // "(ma" — cursor at end, prefix "ma".
-    const result = (try collect("(ma", 3, &registry, null, a)) orelse return error.NoCompletion;
+    const result = (try collect("(ma", 3, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start); // after "("
     try testing.expect(contains(result, "map"));
     try testing.expect(contains(result, "max"));
@@ -191,12 +256,12 @@ test "completes after a single-term sigil" {
     defer registry.deinit();
 
     // "$no" — single-term call prefix "no".
-    const result = (try collect("$no", 3, &registry, null, a)) orelse return error.NoCompletion;
+    const result = (try collect("$no", 3, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start);
     try testing.expect(std.mem.startsWith(u8, result.items[0].label, "no"));
 }
 
-test "suppresses completion immediately after a scope thunk" {
+test "scope completion offers nothing with no bindings in scope" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -204,8 +269,41 @@ test "suppresses completion immediately after a scope thunk" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // ":ma" is a scope reference, not a vocabulary position.
-    try testing.expect((try collect(":ma", 3, &registry, null, a)) == null);
+    // ":ma" is a scope reference but nothing is bound at top level: a result with
+    // no items (not the vocabulary, and not null).
+    const result = (try collect(":ma", 3, &registry, null, .expression, a)) orelse return error.NoResult;
+    try testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "scope completion offers a let binding after a colon" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var registry = try LishRegistry.init(a);
+    defer registry.deinit();
+
+    // "(let total 0 (+ :t" — completing ":t" inside the body offers `total`.
+    const source = "(let total 0 (+ :t";
+    const cursor: u32 = @intCast(source.len);
+    const result = (try collect(source, cursor, &registry, null, .expression, a)) orelse return error.NoResult;
+    try testing.expect(contains(result, "total"));
+    for (result.items) |item| try testing.expectEqual(Kind.variable, item.kind);
+}
+
+test "scope completion offers macro head params in a body" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var registry = try LishRegistry.init(a);
+    defer registry.deinit();
+
+    // "| double x | (* :x" — completing ":x" in the body offers the head param.
+    const source = "| double x | (* :x";
+    const cursor: u32 = @intCast(source.len);
+    const result = (try collect(source, cursor, &registry, null, .macro, a)) orelse return error.NoResult;
+    try testing.expect(contains(result, "x"));
 }
 
 test "suppresses completion inside a string" {
@@ -217,7 +315,7 @@ test "suppresses completion inside a string" {
     defer registry.deinit();
 
     // Cursor inside the open string literal.
-    try testing.expect((try collect("(f \"ma", 6, &registry, null, a)) == null);
+    try testing.expect((try collect("(f \"ma", 6, &registry, null, .expression, a)) == null);
 }
 
 test "suppresses completion inside a comment" {
@@ -228,7 +326,7 @@ test "suppresses completion inside a comment" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    try testing.expect((try collect("# ma", 4, &registry, null, a)) == null);
+    try testing.expect((try collect("# ma", 4, &registry, null, .expression, a)) == null);
 }
 
 test "empty prefix after an open paren offers the vocabulary" {
@@ -239,7 +337,7 @@ test "empty prefix after an open paren offers the vocabulary" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    const result = (try collect("(", 1, &registry, null, a)) orelse return error.NoCompletion;
+    const result = (try collect("(", 1, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start);
     try testing.expect(result.items.len > 50); // the whole vocabulary
     try testing.expect(contains(result, "if"));
@@ -257,7 +355,7 @@ test "includes a workspace macro and dedupes against the vocabulary" {
     defer index.deinit();
     try index.indexSource(a, "file:///lib.lishmacro", "| myhelper x | :x");
 
-    const result = (try collect("(my", 3, &registry, &index, a)) orelse return error.NoCompletion;
+    const result = (try collect("(my", 3, &registry, &index, .expression, a)) orelse return error.NoCompletion;
     try testing.expect(contains(result, "myhelper"));
 
     // No label appears twice.
@@ -277,7 +375,7 @@ test "symbolic operator name is part of the prefix" {
     defer registry.deinit();
 
     // "(?" — prefix "?" should reach the random ops "?" and "?<".
-    const result = (try collect("(?", 2, &registry, null, a)) orelse return error.NoCompletion;
+    const result = (try collect("(?", 2, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start);
     try testing.expect(contains(result, "?"));
     try testing.expect(contains(result, "?<"));

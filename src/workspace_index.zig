@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const lish = @import("lish");
+const snippet = @import("snippet.zig");
 const uri = @import("uri.zig");
 const document_store = @import("document_store.zig");
 
@@ -36,6 +37,8 @@ pub const MacroDef = struct {
     end: u32,
     /// Call signature rendered from the head, e.g. `clamp lo hi x`.
     signature: []const u8,
+    /// LSP completion snippet, e.g. `clamp ${1:lo} ${2:hi} ${3:x}`.
+    snippet: []const u8,
 };
 
 pub const WorkspaceIndex = struct {
@@ -87,6 +90,7 @@ pub const WorkspaceIndex = struct {
                 .start = id.position.start,
                 .end = id.position.end,
                 .signature = try renderSignature(arena, macro),
+                .snippet = try renderSnippet(arena, macro),
             };
         }
     }
@@ -204,6 +208,19 @@ fn renderSignature(arena: Allocator, macro: lish.macro_parser.AstMacro) Allocato
         try buf.appendSlice(arena, param.id);
     }
     return buf.toOwnedSlice(arena);
+}
+
+/// Render a macro's completion snippet (`name ${1:p1} ${2:p2}`) into `arena`.
+fn renderSnippet(arena: Allocator, macro: lish.macro_parser.AstMacro) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    out.writer.writeAll(macro.id.valid.name) catch return error.OutOfMemory;
+    var n: usize = 1;
+    for (macro.parameters) |param_node| {
+        if (param_node != .valid) continue;
+        snippet.writePlaceholder(&out.writer, n, param_node.valid.id) catch return error.OutOfMemory;
+        n += 1;
+    }
+    return out.written();
 }
 
 // Tests

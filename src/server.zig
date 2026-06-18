@@ -12,6 +12,7 @@ const diagnostics_mod = @import("diagnostics.zig");
 const semantic_tokens = @import("semantic_tokens.zig");
 const hover_mod = @import("hover.zig");
 const completion_mod = @import("completion.zig");
+const signature_help_mod = @import("signature_help.zig");
 const lish_registry = @import("lish_registry.zig");
 const definition_mod = @import("definition.zig");
 const workspace_index = @import("workspace_index.zig");
@@ -57,6 +58,9 @@ pub const Server = struct {
     /// tokens or hover) so the lifecycle tests that never request them pay
     /// nothing. Owned here; torn down in `deinit`.
     registry: ?LishRegistry = null,
+    /// Like `registry` but with the REPL config ops included, used for lish
+    /// config-file documents. Lazy.
+    config_registry: ?LishRegistry = null,
     /// Workspace macro index for go-to-definition, built lazily on the first
     /// definition request and rebuilt when a `.lishmacro` document changes.
     index: ?WorkspaceIndex = null,
@@ -78,6 +82,7 @@ pub const Server = struct {
     pub fn deinit(server: *Server) void {
         server.documents.deinit();
         if (server.registry) |*registry| registry.deinit();
+        if (server.config_registry) |*registry| registry.deinit();
         if (server.index) |*index| index.deinit();
         for (server.roots.items) |root| server.allocator.free(root);
         server.roots.deinit(server.allocator);
@@ -87,6 +92,14 @@ pub const Server = struct {
     fn ensureRegistry(server: *Server) std.mem.Allocator.Error!*LishRegistry {
         if (server.registry == null) server.registry = try LishRegistry.init(server.allocator);
         return &server.registry.?;
+    }
+
+    /// The registry appropriate to `uri`: the config-ops-included one for a lish
+    /// config file, the standard one otherwise. Both are built lazily.
+    fn registryFor(server: *Server, uri: []const u8) std.mem.Allocator.Error!*LishRegistry {
+        if (!isConfigFile(uri)) return server.ensureRegistry();
+        if (server.config_registry == null) server.config_registry = try LishRegistry.initWithConfigOps(server.allocator);
+        return &server.config_registry.?;
     }
 
     /// Build the workspace macro index on first use, rebuilding it when a
@@ -167,6 +180,9 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, method, "textDocument/completion")) {
             const req_id = id orelse return;
             try server.handleCompletion(req_id, params);
+        } else if (std.mem.eql(u8, method, "textDocument/signatureHelp")) {
+            const req_id = id orelse return;
+            try server.handleSignatureHelp(req_id, params);
         } else {
             // Unknown method. Per spec, requests get an error; notifications silently ignored.
             if (id) |req_id| try server.sendError(req_id, .method_not_found, "method not supported");
@@ -290,7 +306,7 @@ pub const Server = struct {
         // on a stale filtered set that gets cleared. Letting completion fire on
         // the operator name's first letter (the client's keyword trigger) is both
         // less noisy and works identically at any nesting depth.
-        try bw.writeAll("],\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{}},\"serverInfo\":{\"name\":\"lish-lsp\",\"version\":\"0.0.0\"}}");
+        try bw.writeAll("],\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{},\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\" \"],\"retriggerCharacters\":[\" \"]}},\"serverInfo\":{\"name\":\"lish-lsp\",\"version\":\"0.0.0\"}}");
         try server.sendResult(id, bw.buffered());
     }
 
@@ -346,7 +362,7 @@ pub const Server = struct {
         defer arena.deinit();
         const a = arena.allocator();
 
-        const registry = try server.ensureRegistry();
+        const registry = try server.registryFor(uri);
         const index = try server.ensureIndex();
         const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
         const data = try semantic_tokens.encode(doc.text, line_table, registry, index, languageOf(uri), a);
@@ -376,7 +392,7 @@ pub const Server = struct {
         const cursor = line_table.byteAt(position.line, position.character);
         if (cursor >= doc.text.len) return server.sendResult(id, "null");
 
-        const registry = try server.ensureRegistry();
+        const registry = try server.registryFor(uri);
         const index = try server.ensureIndex();
         const result = (switch (languageOf(uri)) {
             .expression => try hover_mod.hoverAt(doc.text, cursor, registry, index, a),
@@ -458,9 +474,9 @@ pub const Server = struct {
         const cursor = line_table.byteAt(position.line, position.character);
         if (cursor > doc.text.len) return server.sendResult(id, "[]");
 
-        const registry = try server.ensureRegistry();
+        const registry = try server.registryFor(uri);
         const index = try server.ensureIndex();
-        const result = (try completion_mod.collect(doc.text, cursor, registry, index, a)) orelse
+        const result = (try completion_mod.collect(doc.text, cursor, registry, index, languageOf(uri), a)) orelse
             return server.sendResult(id, "[]");
 
         // The replaced word runs from where it begins to the cursor; the same
@@ -475,7 +491,7 @@ pub const Server = struct {
             if (i != 0) try bw.writeByte(',');
             try bw.writeAll("{\"label\":\"");
             try writeJsonString(bw, item.label);
-            try bw.print("\",\"kind\":{d},\"detail\":\"", .{completionKind(item.kind)});
+            try bw.print("\",\"kind\":{d},\"insertTextFormat\":2,\"detail\":\"", .{completionKind(item.kind)});
             try writeJsonString(bw, item.detail);
             try bw.writeAll("\",\"documentation\":\"");
             try writeJsonString(bw, item.documentation);
@@ -483,10 +499,43 @@ pub const Server = struct {
                 "\",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"",
                 .{ start.line, start.character, end.line, end.character },
             );
-            try writeJsonString(bw, item.label);
+            try writeJsonString(bw, item.snippet);
             try bw.writeAll("\"}}");
         }
         try bw.writeByte(']');
+        try server.sendResult(id, body.written());
+    }
+
+    fn handleSignatureHelp(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
+        const td = textDocumentOf(params) orelse return server.sendResult(id, "null");
+        const uri = stringField(td, "uri") orelse return server.sendResult(id, "null");
+        const doc = server.documents.get(uri) orelse return server.sendResult(id, "null");
+        const position = positionOf(params) orelse return server.sendResult(id, "null");
+
+        var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
+        const cursor = line_table.byteAt(position.line, position.character);
+        if (cursor > doc.text.len) return server.sendResult(id, "null");
+
+        const registry = try server.registryFor(uri);
+        const help = (try signature_help_mod.at(doc.text, cursor, registry, languageOf(uri), a)) orelse
+            return server.sendResult(id, "null");
+
+        var body: std.Io.Writer.Allocating = .init(a);
+        const bw = &body.writer;
+        try bw.writeAll("{\"signatures\":[{\"label\":\"");
+        try writeJsonString(bw, help.label);
+        try bw.writeAll("\",\"parameters\":[");
+        for (help.params, 0..) |param, i| {
+            if (i != 0) try bw.writeByte(',');
+            try bw.writeAll("{\"label\":\"");
+            try writeJsonString(bw, param);
+            try bw.writeAll("\"}");
+        }
+        try bw.print("]}}],\"activeSignature\":0,\"activeParameter\":{d}}}", .{help.active});
         try server.sendResult(id, body.written());
     }
 
@@ -529,14 +578,19 @@ fn languageOf(uri: []const u8) semantic_tokens.Language {
     return if (std.mem.endsWith(u8, uri, lish.MACRO_EXTENSION)) .macro else .expression;
 }
 
-/// Map an operator classification to an LSP `CompletionItemKind`. Macros share
-/// the `Function` icon (LSP has no macro kind); keyword-category ops read as
-/// `Keyword`.
-fn completionKind(class: lish_registry.OperatorClass) u32 {
-    return switch (class) {
+/// Whether `uri` is a lish REPL config file (`…/lish/config.lish`), where the
+/// repl-config ops are in scope.
+fn isConfigFile(uri: []const u8) bool {
+    return std.mem.endsWith(u8, uri, "/lish/config.lish");
+}
+
+/// Map a completion kind to an LSP `CompletionItemKind`. Macros share the
+/// `Function` icon (LSP has no macro kind); in-scope bindings read as `Variable`.
+fn completionKind(kind: completion_mod.Kind) u32 {
+    return switch (kind) {
         .keyword => 14, // Keyword
         .function, .macro => 3, // Function
-        .unknown => 6, // Variable (not produced by completion, mapped defensively)
+        .variable => 6, // Variable
     };
 }
 
@@ -1112,7 +1166,134 @@ test "completion returns prefix-matching vocabulary items with an edit range" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"map\"") != null);
     // The edit replaces from the start of "ma" (char 1) to the cursor (char 3).
     try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":1}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"newText\":\"map\"") != null);
+    // newText is the snippet (placeholders for the parameters), inserted as a snippet.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"insertTextFormat\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"newText\":\"map ${1:name} ${2:list} ${3:body}\"") != null);
+}
+
+test "completion after a colon offers in-scope bindings" {
+    var out_buf: [16 * 1024]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // "(let total 0 (+ :t)" — completing ":t" inside the body offers `total`.
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///s.lish","languageId":"lish","version":1,"text":"(let total 0 (+ :t)"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    // Cursor right after ":t" (line 0, char 18).
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":17,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///s.lish"},"position":{"line":0,"character":18}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":17") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"total\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":6") != null); // Variable
+}
+
+test "completion in a config file offers the repl-config ops" {
+    var out_buf: [64 * 1024]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///home/u/.config/lish/config.lish","languageId":"lish","version":1,"text":"(indent"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":18,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///home/u/.config/lish/config.lish"},"position":{"line":0,"character":7}}}
+    , arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"label\":\"indent-width\"") != null);
+}
+
+test "completion in a normal file does not offer repl-config ops" {
+    var out_buf: [64 * 1024]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///proj/script.lish","languageId":"lish","version":1,"text":"(indent"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":19,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///proj/script.lish"},"position":{"line":0,"character":7}}}
+    , arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "indent-width") == null);
+}
+
+test "signatureHelp reports the active parameter" {
+    var out_buf: [16 * 1024]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // "(clamp 0 10 " — `clamp v lo hi`, cursor in the third arg slot.
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///h.lish","languageId":"lish","version":1,"text":"(clamp 0 10 "}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":21,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"file:///h.lish"},"position":{"line":0,"character":12}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":21") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"clamp v lo hi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"activeParameter\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"hi\"") != null);
+}
+
+test "initialize advertises signatureHelpProvider" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"signatureHelpProvider\"") != null);
 }
 
 test "completion inside a comment returns an empty list" {

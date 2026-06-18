@@ -33,6 +33,11 @@
           "description": "Absolute path to the lish-lsp binary, or just the name if it's on $PATH."
         }
       }
+    },
+    "configurationDefaults": {
+      "[lish]": {
+        "editor.formatOnType": true
+      }
     }
   },
   "scripts": {

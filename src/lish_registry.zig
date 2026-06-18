@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const lish = @import("lish");
+const snippet = @import("snippet.zig");
 
 const Allocator = std.mem.Allocator;
 const Registry = lish.Registry;
@@ -62,21 +63,44 @@ fn classifyOp(op: Operation) OperatorClass {
 pub const LishRegistry = struct {
     registry: Registry,
     allocator: Allocator,
+    /// Throwaway config bound to the repl-config ops in the config-file variant
+    /// (their metadata is read; they are never executed). Heap-allocated for a
+    /// stable address. Null in the standard variant.
+    config: ?*lish.repl.ReplConfig = null,
 
-    /// Build a registry with the standard vocabulary: builtins + random + stdlib.
+    /// Build a registry with the standard vocabulary (builtins + random auto-load
+    /// the stdlib).
     pub fn init(allocator: Allocator) Allocator.Error!LishRegistry {
         var registry = Registry.init(allocator);
         errdefer registry.deinit(allocator);
 
         try lish.builtins.registerAll(&registry, allocator);
         try lish.random.registerAll(&registry, allocator);
-        _ = try lish.loadStdlib(&registry);
 
         return .{ .registry = registry, .allocator = allocator };
     }
 
+    /// Like `init`, plus the REPL config ops — for tooling on a lish config file.
+    pub fn initWithConfigOps(allocator: Allocator) Allocator.Error!LishRegistry {
+        var self = try init(allocator);
+        errdefer self.deinit();
+
+        const config = try allocator.create(lish.repl.ReplConfig);
+        errdefer allocator.destroy(config);
+        config.* = lish.repl.ReplConfig.init(allocator);
+        errdefer config.deinit();
+
+        try lish.repl.registerConfigOps(&self.registry, config, allocator);
+        self.config = config;
+        return self;
+    }
+
     pub fn deinit(self: *LishRegistry) void {
         self.registry.deinit(self.allocator);
+        if (self.config) |config| {
+            config.deinit();
+            self.allocator.destroy(config);
+        }
     }
 
     /// Classify a name appearing in callable (operator) position.
@@ -95,7 +119,41 @@ pub const LishRegistry = struct {
         detail: []const u8,
         /// One-line summary; empty for macros (which carry none).
         documentation: []const u8,
+        /// LSP snippet body, e.g. `clamp ${1:lo} ${2:hi} ${3:x}`.
+        snippet: []const u8,
     };
+
+    /// Render an operation's structured signature to its display string,
+    /// allocated in the registry's macro arena (lives as long as the registry).
+    fn renderSignature(self: *LishRegistry, op: Operation, name: []const u8) Allocator.Error![]const u8 {
+        var signature: std.Io.Writer.Allocating = .init(self.registry.macroAllocator());
+        op.signature.render(&signature.writer, name) catch return error.OutOfMemory;
+        return signature.written();
+    }
+
+    /// Build an op's completion snippet: a placeholder per non-optional
+    /// parameter (optionals are left for the user to add).
+    fn opSnippet(self: *LishRegistry, op: Operation, name: []const u8) Allocator.Error![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.registry.macroAllocator());
+        out.writer.writeAll(name) catch return error.OutOfMemory;
+        var n: usize = 1;
+        for (op.signature.params) |param| {
+            if (param.arity == .optional) continue;
+            snippet.writePlaceholder(&out.writer, n, param.name) catch return error.OutOfMemory;
+            n += 1;
+        }
+        return out.written();
+    }
+
+    /// Build a macro's completion snippet: a placeholder per parameter.
+    fn macroSnippet(self: *LishRegistry, macro: *const Macro, name: []const u8) Allocator.Error![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.registry.macroAllocator());
+        out.writer.writeAll(name) catch return error.OutOfMemory;
+        for (macro.parameters, 1..) |param, n| {
+            snippet.writePlaceholder(&out.writer, n, param.id) catch return error.OutOfMemory;
+        }
+        return out.written();
+    }
 
     /// Append every operation and macro whose name starts with `prefix` to
     /// `out`. Macro signatures are rendered into the registry's macro arena
@@ -114,8 +172,9 @@ pub const LishRegistry = struct {
             try out.append(allocator, .{
                 .name = name,
                 .class = classifyOp(op),
-                .detail = op.signature,
+                .detail = try self.renderSignature(op, name),
                 .documentation = op.description,
+                .snippet = try self.opSnippet(op, name),
             });
         }
 
@@ -123,13 +182,15 @@ pub const LishRegistry = struct {
         while (macro_it.next()) |entry| {
             const name = entry.key_ptr.*;
             if (!std.mem.startsWith(u8, name, prefix)) continue;
+            const macro = entry.value_ptr.*;
             var signature: std.Io.Writer.Allocating = .init(self.registry.macroAllocator());
-            entry.value_ptr.*.writeSignature(&signature.writer) catch return error.OutOfMemory;
+            macro.writeSignature(&signature.writer) catch return error.OutOfMemory;
             try out.append(allocator, .{
                 .name = name,
                 .class = .macro,
                 .detail = signature.written(),
                 .documentation = "",
+                .snippet = try self.macroSnippet(macro, name),
             });
         }
     }
@@ -142,7 +203,7 @@ pub const LishRegistry = struct {
             return .{
                 .kind = .operation,
                 .name = name,
-                .signature = op.signature,
+                .signature = try self.renderSignature(op, name),
                 .description = op.description,
                 .category = op.category,
             };
