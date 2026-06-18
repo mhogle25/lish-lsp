@@ -1,0 +1,73 @@
+name: Release
+
+# Publish prebuilt lish-lsp binaries when a version tag is pushed, so editors can
+# fetch a binary instead of building from source. Zig cross-compiles every target
+# from one Linux runner, so there is no per-OS build matrix.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            artifact: lish-lsp-linux-x86_64
+          - target: aarch64-linux-musl
+            artifact: lish-lsp-linux-aarch64
+          - target: x86_64-macos
+            artifact: lish-lsp-macos-x86_64
+          - target: aarch64-macos
+            artifact: lish-lsp-macos-aarch64
+          - target: x86_64-windows
+            artifact: lish-lsp-windows-x86_64.exe
+    steps:
+      # build.zig.zon pins `.lish = .path "../lish-zig"`, so lish-zig must sit
+      # beside lish-lsp (same layout as ci.yml).
+      - name: Checkout lish-lsp
+        uses: actions/checkout@v4
+        with:
+          path: lish-lsp
+      - name: Checkout lish-zig
+        uses: actions/checkout@v4
+        with:
+          repository: mhogle25/lish-zig
+          path: lish-zig
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build
+        working-directory: lish-lsp
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+      - name: Stage binary
+        working-directory: lish-lsp
+        run: |
+          bin=zig-out/bin/lish-lsp
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cp "$bin" "${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: lish-lsp/${{ matrix.artifact }}
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > sha256sums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
