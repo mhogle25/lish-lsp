@@ -28,6 +28,7 @@ pub fn main(init: std.process.Init) !u8 {
     defer arena.deinit();
 
     var server = Server.init(allocator, stdout, stderr);
+    server.io = io;
     defer server.deinit();
 
     while (!server.should_exit) {

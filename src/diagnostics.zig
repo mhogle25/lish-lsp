@@ -55,6 +55,34 @@ pub fn collect(node: *const AstNode, out: *std.ArrayList(Diagnostic), allocator:
     }
 }
 
+/// Walk a parsed macro module and append every error: module-level parse
+/// errors, malformed heads (bad id or parameter), and errors inside each
+/// macro's body expression (via `collect`).
+pub fn collectMacro(module: lish.macro_parser.AstMacroModule, out: *std.ArrayList(Diagnostic), allocator: Allocator) Allocator.Error!void {
+    for (module.macros) |node| {
+        switch (node) {
+            .err => |e| try out.append(allocator, macroError(e)),
+            .macro => |macro| {
+                switch (macro.id) {
+                    .err => |e| try out.append(allocator, macroError(e)),
+                    .valid => {},
+                }
+                for (macro.parameters) |param| {
+                    switch (param) {
+                        .err => |e| try out.append(allocator, macroError(e)),
+                        .valid => {},
+                    }
+                }
+                try collect(macro.body, out, allocator);
+            },
+        }
+    }
+}
+
+fn macroError(e: lish.macro_parser.MacroError) Diagnostic {
+    return .{ .start_byte = e.start, .end_byte = e.end, .severity = .err, .message = e.message };
+}
+
 /// Maps byte offsets to (line, column) by remembering the byte offset of each
 /// line's first byte. Built once per document parse, reused for every span.
 pub const LineTable = struct {
@@ -87,6 +115,16 @@ pub const LineTable = struct {
         const line_index: u32 = @intCast(lo - 1);
         const col = byte - table.line_starts[line_index];
         return .{ .line = line_index, .character = col };
+    }
+
+    /// Translate an LSP {line, character} back to a byte offset. The inverse of
+    /// `position`. A line past the end clamps to the last line's start, and (as
+    /// with `position`) `character` is treated as a byte column, which matches
+    /// for ASCII source. Out-of-range columns are not clamped to the line end:
+    /// the caller checks the result against the document length.
+    pub fn byteAt(table: LineTable, line: u32, character: u32) u32 {
+        const line_index = if (line < table.line_starts.len) line else @as(u32, @intCast(table.line_starts.len - 1));
+        return table.line_starts[line_index] + character;
     }
 };
 
@@ -128,6 +166,41 @@ test "collect finds nothing for valid input" {
     var diags: std.ArrayList(Diagnostic) = .empty;
     try collect(root, &diags, a);
 
+    try std.testing.expectEqual(@as(usize, 0), diags.items.len);
+}
+
+test "collectMacro finds a malformed-head error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A bare `~` with no parameter name is a head error.
+    const module = try lish.macro_parser.parseMacroModule(a, "| foo ~ | :foo");
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    try collectMacro(module, &diags, a);
+    try std.testing.expect(diags.items.len >= 1);
+}
+
+test "collectMacro finds a body error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Unbalanced bracket inside the body.
+    const module = try lish.macro_parser.parseMacroModule(a, "| foo x | (+ :x 1");
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    try collectMacro(module, &diags, a);
+    try std.testing.expect(diags.items.len >= 1);
+}
+
+test "collectMacro finds nothing for a valid module" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const module = try lish.macro_parser.parseMacroModule(a, "| double x | * :x 2");
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    try collectMacro(module, &diags, a);
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
 }
 

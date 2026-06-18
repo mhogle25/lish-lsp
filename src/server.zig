@@ -10,9 +10,17 @@ const protocol = @import("protocol.zig");
 const document_store = @import("document_store.zig");
 const diagnostics_mod = @import("diagnostics.zig");
 const semantic_tokens = @import("semantic_tokens.zig");
+const hover_mod = @import("hover.zig");
+const completion_mod = @import("completion.zig");
+const lish_registry = @import("lish_registry.zig");
+const definition_mod = @import("definition.zig");
+const workspace_index = @import("workspace_index.zig");
+const uri_mod = @import("uri.zig");
 
 pub const DocumentStore = document_store.DocumentStore;
 pub const Document = document_store.Document;
+pub const LishRegistry = lish_registry.LishRegistry;
+pub const WorkspaceIndex = workspace_index.WorkspaceIndex;
 
 pub const State = enum {
     uninitialized,
@@ -40,17 +48,58 @@ pub const Server = struct {
     writer: *std.Io.Writer,
     log: *std.Io.Writer,
     documents: DocumentStore,
+    allocator: std.mem.Allocator,
+    /// Filesystem io, used by the workspace index to scan `.lishmacro` files on
+    /// disk. Set by `main` after construction; left `undefined` in tests that
+    /// never trigger a disk scan (no workspace roots).
+    io: std.Io = undefined,
+    /// The standard lish vocabulary, built lazily on first feature use (semantic
+    /// tokens or hover) so the lifecycle tests that never request them pay
+    /// nothing. Owned here; torn down in `deinit`.
+    registry: ?LishRegistry = null,
+    /// Workspace macro index for go-to-definition, built lazily on the first
+    /// definition request and rebuilt when a `.lishmacro` document changes.
+    index: ?WorkspaceIndex = null,
+    /// True when the index must be (re)built before the next lookup.
+    index_dirty: bool = true,
+    /// Workspace root paths from `initialize` (`workspaceFolders`/`rootUri`/
+    /// `rootPath`). Each path and the backing list are owned by `allocator`.
+    roots: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, log: *std.Io.Writer) Server {
         return .{
             .writer = writer,
             .log = log,
             .documents = DocumentStore.init(allocator),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(server: *Server) void {
         server.documents.deinit();
+        if (server.registry) |*registry| registry.deinit();
+        if (server.index) |*index| index.deinit();
+        for (server.roots.items) |root| server.allocator.free(root);
+        server.roots.deinit(server.allocator);
+    }
+
+    /// Build the vocabulary registry on first use and return it thereafter.
+    fn ensureRegistry(server: *Server) std.mem.Allocator.Error!*LishRegistry {
+        if (server.registry == null) server.registry = try LishRegistry.init(server.allocator);
+        return &server.registry.?;
+    }
+
+    /// Build the workspace macro index on first use, rebuilding it when a
+    /// `.lishmacro` document has changed since the last lookup. Open documents
+    /// win over their on-disk copies (see `WorkspaceIndex.build`).
+    fn ensureIndex(server: *Server) std.mem.Allocator.Error!*WorkspaceIndex {
+        if (server.index == null) server.index = WorkspaceIndex.init(server.allocator);
+        const index = &server.index.?;
+        if (server.index_dirty) {
+            try index.build(server.io, server.allocator, server.roots.items, &server.documents);
+            server.index_dirty = false;
+        }
+        return index;
     }
 
     /// Parse and dispatch one LSP message. `body` is the JSON payload (no framing).
@@ -84,7 +133,7 @@ pub const Server = struct {
 
         if (std.mem.eql(u8, method, "initialize")) {
             const req_id = id orelse return; // initialize must be a request
-            try server.handleInitialize(req_id);
+            try server.handleInitialize(req_id, params);
         } else if (std.mem.eql(u8, method, "initialized")) {
             // Notification — no response. State already moved on the initialize response.
         } else if (std.mem.eql(u8, method, "shutdown")) {
@@ -109,6 +158,15 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, method, "textDocument/semanticTokens/full")) {
             const req_id = id orelse return;
             try server.handleSemanticTokensFull(req_id, params);
+        } else if (std.mem.eql(u8, method, "textDocument/hover")) {
+            const req_id = id orelse return;
+            try server.handleHover(req_id, params);
+        } else if (std.mem.eql(u8, method, "textDocument/definition")) {
+            const req_id = id orelse return;
+            try server.handleDefinition(req_id, params);
+        } else if (std.mem.eql(u8, method, "textDocument/completion")) {
+            const req_id = id orelse return;
+            try server.handleCompletion(req_id, params);
         } else {
             // Unknown method. Per spec, requests get an error; notifications silently ignored.
             if (id) |req_id| try server.sendError(req_id, .method_not_found, "method not supported");
@@ -121,6 +179,7 @@ pub const Server = struct {
         const text = stringField(td, "text") orelse return;
         const version = versionField(td);
         try server.documents.open(uri, text, version);
+        server.markIndexDirtyIfMacro(uri);
         try server.publishDiagnostics(uri);
     }
 
@@ -144,6 +203,7 @@ pub const Server = struct {
         if (text_val != .string) return;
 
         try server.documents.replace(uri, text_val.string, version);
+        server.markIndexDirtyIfMacro(uri);
         try server.publishDiagnostics(uri);
     }
 
@@ -157,9 +217,17 @@ pub const Server = struct {
         defer arena.deinit();
         const a = arena.allocator();
 
-        const root = try lish.parser.parse(a, doc.text);
         var diags: std.ArrayList(diagnostics_mod.Diagnostic) = .empty;
-        try diagnostics_mod.collect(root, &diags, a);
+        switch (languageOf(uri)) {
+            .expression => {
+                const root = try lish.parser.parse(a, doc.text);
+                try diagnostics_mod.collect(root, &diags, a);
+            },
+            .macro => {
+                const module = try lish.macro_parser.parseMacroModule(a, doc.text);
+                try diagnostics_mod.collectMacro(module, &diags, a);
+            },
+        }
 
         const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
 
@@ -193,10 +261,21 @@ pub const Server = struct {
         const td = textDocumentOf(params) orelse return;
         const uri = stringField(td, "uri") orelse return;
         server.documents.close(uri);
+        server.markIndexDirtyIfMacro(uri);
     }
 
-    fn handleInitialize(server: *Server, id: std.json.Value) !void {
+    /// A `.lishmacro` document opening, changing, or closing can alter the set of
+    /// known macros, so the index must rebuild before the next lookup.
+    fn markIndexDirtyIfMacro(server: *Server, uri: []const u8) void {
+        if (languageOf(uri) == .macro) server.index_dirty = true;
+    }
+
+    fn handleInitialize(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
         server.state = .initialized;
+        server.collectRoots(params) catch |err| {
+            server.log.print("lish-lsp: collectRoots failed: {s}\n", .{@errorName(err)}) catch {};
+            server.log.flush() catch {};
+        };
 
         var buf: [2048]u8 = undefined;
         var bw = std.Io.Writer.fixed(&buf);
@@ -205,8 +284,48 @@ pub const Server = struct {
             if (i != 0) try bw.writeByte(',');
             try bw.print("\"{s}\"", .{name});
         }
-        try bw.writeAll("],\"tokenModifiers\":[]},\"full\":true}},\"serverInfo\":{\"name\":\"lish-lsp\",\"version\":\"0.0.0\"}}");
+        // No `triggerCharacters`: in a lisp every call opens with `(`, so making
+        // `(` a trigger would dump the whole vocabulary on every paren and (with
+        // editor autopairs inserting the closing `)`) leaves completion relying
+        // on a stale filtered set that gets cleared. Letting completion fire on
+        // the operator name's first letter (the client's keyword trigger) is both
+        // less noisy and works identically at any nesting depth.
+        try bw.writeAll("],\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"definitionProvider\":true,\"completionProvider\":{}},\"serverInfo\":{\"name\":\"lish-lsp\",\"version\":\"0.0.0\"}}");
         try server.sendResult(id, bw.buffered());
+    }
+
+    /// Record the workspace roots from `initialize` params as filesystem paths.
+    /// Precedence follows the spec: `workspaceFolders` (each folder's `uri`),
+    /// then the deprecated `rootUri`, then the deprecated `rootPath`. URIs are
+    /// decoded to paths; a non-`file://` URI is skipped.
+    fn collectRoots(server: *Server, params: ?std.json.Value) !void {
+        const p = params orelse return;
+        if (p != .object) return;
+
+        if (p.object.get("workspaceFolders")) |folders| {
+            if (folders == .array) {
+                for (folders.array.items) |folder| {
+                    if (folder != .object) continue;
+                    const folder_uri = stringField(folder.object, "uri") orelse continue;
+                    try server.addRootFromUri(folder_uri);
+                }
+                return;
+            }
+        }
+        if (stringField(p.object, "rootUri")) |root_uri| {
+            try server.addRootFromUri(root_uri);
+            return;
+        }
+        if (stringField(p.object, "rootPath")) |root_path| {
+            try server.roots.append(server.allocator, try server.allocator.dupe(u8, root_path));
+        }
+    }
+
+    /// Decode a `file://` URI to a path and append it as a root (skipping a
+    /// non-file URI).
+    fn addRootFromUri(server: *Server, root_uri: []const u8) !void {
+        const path = (try uri_mod.toPath(server.allocator, root_uri)) orelse return;
+        try server.roots.append(server.allocator, path);
     }
 
     fn handleSemanticTokensFull(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
@@ -227,8 +346,10 @@ pub const Server = struct {
         defer arena.deinit();
         const a = arena.allocator();
 
+        const registry = try server.ensureRegistry();
+        const index = try server.ensureIndex();
         const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
-        const data = try semantic_tokens.encode(doc.text, line_table, a);
+        const data = try semantic_tokens.encode(doc.text, line_table, registry, index, languageOf(uri), a);
 
         var body: std.Io.Writer.Allocating = .init(a);
         const bw = &body.writer;
@@ -238,6 +359,134 @@ pub const Server = struct {
             try bw.print("{d}", .{v});
         }
         try bw.writeAll("]}");
+        try server.sendResult(id, body.written());
+    }
+
+    fn handleHover(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
+        const td = textDocumentOf(params) orelse return server.sendResult(id, "null");
+        const uri = stringField(td, "uri") orelse return server.sendResult(id, "null");
+        const doc = server.documents.get(uri) orelse return server.sendResult(id, "null");
+        const position = positionOf(params) orelse return server.sendResult(id, "null");
+
+        var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
+        const cursor = line_table.byteAt(position.line, position.character);
+        if (cursor >= doc.text.len) return server.sendResult(id, "null");
+
+        const registry = try server.ensureRegistry();
+        const index = try server.ensureIndex();
+        const result = (switch (languageOf(uri)) {
+            .expression => try hover_mod.hoverAt(doc.text, cursor, registry, index, a),
+            .macro => try hover_mod.hoverAtMacro(doc.text, cursor, registry, index, a),
+        }) orelse return server.sendResult(id, "null");
+
+        const start = line_table.position(result.start);
+        const end = line_table.position(result.end);
+
+        var body: std.Io.Writer.Allocating = .init(a);
+        const bw = &body.writer;
+        try bw.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
+        try writeJsonString(bw, result.markdown);
+        try bw.print(
+            "\"}},\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}",
+            .{ start.line, start.character, end.line, end.character },
+        );
+        try server.sendResult(id, body.written());
+    }
+
+    fn handleDefinition(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
+        const td = textDocumentOf(params) orelse return server.sendResult(id, "null");
+        const uri = stringField(td, "uri") orelse return server.sendResult(id, "null");
+        const doc = server.documents.get(uri) orelse return server.sendResult(id, "null");
+        const position = positionOf(params) orelse return server.sendResult(id, "null");
+
+        var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
+        const cursor = line_table.byteAt(position.line, position.character);
+        if (cursor >= doc.text.len) return server.sendResult(id, "null");
+
+        const index = try server.ensureIndex();
+        const location = (switch (languageOf(uri)) {
+            .expression => try definition_mod.defineExpression(doc.text, cursor, index, a),
+            .macro => try definition_mod.defineMacro(doc.text, cursor, uri, index, a),
+        }) orelse return server.sendResult(id, "null");
+
+        // The location's byte span is relative to its own document, which may be
+        // a different file. Convert it with that document's line structure.
+        const target_text = (try server.targetText(location.uri, a)) orelse return server.sendResult(id, "null");
+        const target_table = try diagnostics_mod.LineTable.build(target_text, a);
+        const start = target_table.position(location.start);
+        const end = target_table.position(location.end);
+
+        var body: std.Io.Writer.Allocating = .init(a);
+        const bw = &body.writer;
+        try bw.writeAll("{\"uri\":\"");
+        try writeJsonString(bw, location.uri);
+        try bw.print(
+            "\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}",
+            .{ start.line, start.character, end.line, end.character },
+        );
+        try server.sendResult(id, body.written());
+    }
+
+    /// The text of the document a definition lives in: the open buffer if we have
+    /// one (so unsaved edits resolve correctly), otherwise the file read from
+    /// disk. Returns null if the URI is unreadable.
+    fn targetText(server: *Server, target_uri: []const u8, arena: std.mem.Allocator) !?[]const u8 {
+        if (server.documents.get(target_uri)) |doc| return doc.text;
+        const path = (try uri_mod.toPath(arena, target_uri)) orelse return null;
+        return std.Io.Dir.cwd().readFileAlloc(server.io, path, arena, .limited(lish.MACRO_FILE_MAX_SIZE)) catch null;
+    }
+
+    fn handleCompletion(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
+        const td = textDocumentOf(params) orelse return server.sendResult(id, "[]");
+        const uri = stringField(td, "uri") orelse return server.sendResult(id, "[]");
+        const doc = server.documents.get(uri) orelse return server.sendResult(id, "[]");
+        const position = positionOf(params) orelse return server.sendResult(id, "[]");
+
+        var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const line_table = try diagnostics_mod.LineTable.build(doc.text, a);
+        const cursor = line_table.byteAt(position.line, position.character);
+        if (cursor > doc.text.len) return server.sendResult(id, "[]");
+
+        const registry = try server.ensureRegistry();
+        const index = try server.ensureIndex();
+        const result = (try completion_mod.collect(doc.text, cursor, registry, index, a)) orelse
+            return server.sendResult(id, "[]");
+
+        // The replaced word runs from where it begins to the cursor; the same
+        // edit range applies to every item.
+        const start = line_table.position(result.replace_start);
+        const end = line_table.position(cursor);
+
+        var body: std.Io.Writer.Allocating = .init(a);
+        const bw = &body.writer;
+        try bw.writeByte('[');
+        for (result.items, 0..) |item, i| {
+            if (i != 0) try bw.writeByte(',');
+            try bw.writeAll("{\"label\":\"");
+            try writeJsonString(bw, item.label);
+            try bw.print("\",\"kind\":{d},\"detail\":\"", .{completionKind(item.kind)});
+            try writeJsonString(bw, item.detail);
+            try bw.writeAll("\",\"documentation\":\"");
+            try writeJsonString(bw, item.documentation);
+            try bw.print(
+                "\",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"",
+                .{ start.line, start.character, end.line, end.character },
+            );
+            try writeJsonString(bw, item.label);
+            try bw.writeAll("\"}}");
+        }
+        try bw.writeByte(']');
         try server.sendResult(id, body.written());
     }
 
@@ -272,6 +521,39 @@ fn textDocumentOf(params: ?std.json.Value) ?std.json.ObjectMap {
     const td = p.object.get("textDocument") orelse return null;
     if (td != .object) return null;
     return td.object;
+}
+
+/// Pick the grammar a document follows from its URI: `.lishmacro` files are
+/// macro modules, everything else (notably `.lish`) is an expression document.
+fn languageOf(uri: []const u8) semantic_tokens.Language {
+    return if (std.mem.endsWith(u8, uri, lish.MACRO_EXTENSION)) .macro else .expression;
+}
+
+/// Map an operator classification to an LSP `CompletionItemKind`. Macros share
+/// the `Function` icon (LSP has no macro kind); keyword-category ops read as
+/// `Keyword`.
+fn completionKind(class: lish_registry.OperatorClass) u32 {
+    return switch (class) {
+        .keyword => 14, // Keyword
+        .function, .macro => 3, // Function
+        .unknown => 6, // Variable (not produced by completion, mapped defensively)
+    };
+}
+
+/// Read the `position` object (`{line, character}`) from request params.
+fn positionOf(params: ?std.json.Value) ?diagnostics_mod.Position {
+    const p = params orelse return null;
+    if (p != .object) return null;
+
+    const pos = p.object.get("position") orelse return null;
+    if (pos != .object) return null;
+
+    const line = pos.object.get("line") orelse return null;
+    const character = pos.object.get("character") orelse return null;
+    if (line != .integer or character != .integer) return null;
+    if (line.integer < 0 or character.integer < 0) return null;
+
+    return .{ .line = @intCast(line.integer), .character = @intCast(character.integer) };
 }
 
 fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -637,6 +919,260 @@ test "initialize advertises semanticTokensProvider" {
     const out = out_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "\"semanticTokensProvider\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"tokenTypes\":[\"comment\"") != null);
+}
+
+test "initialize advertises definitionProvider" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"definitionProvider\":true") != null);
+}
+
+test "initialize records a rootUri as a workspace root" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///home/proj"}}
+    , arena.allocator());
+
+    try std.testing.expectEqual(@as(usize, 1), server.roots.items.len);
+    try std.testing.expectEqualStrings("/home/proj", server.roots.items[0]);
+}
+
+test "definition jumps a macro call to its cross-file definition" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A macro library and an expression document that calls into it, both open.
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lib.lishmacro","languageId":"lish","version":1,"text":"| double x | * :x 2"}}}
+    , arena.allocator());
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///main.lish","languageId":"lish","version":1,"text":"(double 5)"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf); // drop the diagnostics noise
+
+    // Cursor on "double" (line 0, char 1) in main.lish.
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":9,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///main.lish"},"position":{"line":0,"character":1}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":9") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "file:///lib.lishmacro") != null);
+    // "double" header id spans bytes [2,8) on line 0.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":2}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":8}") != null);
+}
+
+test "definition jumps a scope ref to its head parameter in the same document" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///m.lishmacro","languageId":"lish","version":1,"text":"| double x | * :x 2"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    // Cursor on the "x" of ":x" (line 0, char 16).
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///m.lishmacro"},"position":{"line":0,"character":16}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "file:///m.lishmacro") != null);
+    // The head parameter "x" spans bytes [9,10) on line 0.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":9}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":10}") != null);
+}
+
+test "definition on a builtin returns null" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b.lish","languageId":"lish","version":1,"text":"(+ 1 2)"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":11,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///b.lish"},"position":{"line":0,"character":1}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":11") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "definition on an unknown document returns null" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":12,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///missing.lish"},"position":{"line":0,"character":0}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":12") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "initialize advertises completionProvider" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"completionProvider\"") != null);
+}
+
+test "completion returns prefix-matching vocabulary items with an edit range" {
+    var out_buf: [64 * 1024]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///c.lish","languageId":"lish","version":1,"text":"(ma"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    // Cursor after "(ma" (line 0, char 3).
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":15,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.lish"},"position":{"line":0,"character":3}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":15") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"map\"") != null);
+    // The edit replaces from the start of "ma" (char 1) to the cursor (char 3).
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":1}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"newText\":\"map\"") != null);
+}
+
+test "completion inside a comment returns an empty list" {
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///d.lish","languageId":"lish","version":1,"text":"# ma"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":16,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///d.lish"},"position":{"line":0,"character":4}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":16") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+}
+
+test "hover falls back to the workspace index for a user macro" {
+    var out_buf: [8192]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [256]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    defer server.deinit();
+    server.state = .initialized;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///combat.lishmacro","languageId":"lish","version":1,"text":"| strike target | :target"}}}
+    , arena.allocator());
+    try server.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///main.lish","languageId":"lish","version":1,"text":"(strike foe)"}}}
+    , arena.allocator());
+
+    out_writer = std.Io.Writer.fixed(&out_buf);
+
+    // Cursor on "strike" (line 0, char 1) in main.lish.
+    try server.handle(
+        \\{"jsonrpc":"2.0","id":20,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///main.lish"},"position":{"line":0,"character":1}}}
+    , arena.allocator());
+
+    const out = out_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":20") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "strike target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "defined in") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "combat") != null);
 }
 
 test "didChange on unknown document logs but does not crash" {
