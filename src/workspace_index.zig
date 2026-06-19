@@ -39,6 +39,8 @@ pub const MacroDef = struct {
     signature: []const u8,
     /// LSP completion snippet, e.g. `clamp ${1:lo} ${2:hi} ${3:x}`.
     snippet: []const u8,
+    /// Leading docstring comment run, raw (`## ...` markers intact), or empty.
+    description: []const u8,
 };
 
 pub const WorkspaceIndex = struct {
@@ -69,7 +71,9 @@ pub const WorkspaceIndex = struct {
     /// into the index arena. First definition of a name wins (redefinition is
     /// already a lish error).
     pub fn indexSource(self: *WorkspaceIndex, scratch: Allocator, doc_uri: []const u8, source: []const u8) Allocator.Error!void {
-        const module = try lish.macro_parser.parseMacroModule(scratch, source);
+        // WithComments so each macro's leading docstring populates `description`
+        // (plain parseMacroModule leaves it empty — see docstringBefore).
+        const module = (try lish.macro_parser.parseMacroModuleWithComments(scratch, source)).module;
         const arena = self.arena.allocator();
 
         for (module.macros) |node| {
@@ -91,6 +95,7 @@ pub const WorkspaceIndex = struct {
                 .end = id.position.end,
                 .signature = try renderSignature(arena, macro),
                 .snippet = try renderSnippet(arena, macro),
+                .description = try arena.dupe(u8, macro.description),
             };
         }
     }

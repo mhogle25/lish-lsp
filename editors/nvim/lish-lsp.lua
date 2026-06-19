@@ -1,3 +1,8 @@
+-- MINIMAL EXAMPLE: connects the lish-lsp language server, nothing more. The full
+-- editing experience (tree-sitter highlighting/indent, structural indent, a run
+-- command) is editor glue + grammar config that lives in your own dotfiles and in
+-- tree-sitter-lish, not here. This file is the "just talk to the LSP" starting point.
+--
 -- lish-lsp client configuration for Neovim 0.11+.
 --
 -- Drop this file into your config (e.g. ~/.config/nvim/lua/lish-lsp.lua) and

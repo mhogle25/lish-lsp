@@ -1,7 +1,12 @@
 # lish-lsp for Neovim
 
-Drop-in configuration for Neovim 0.10+ using the built-in `vim.lsp.start` API.
-No external plugins required.
+**Minimal example — connects the language server, nothing more.** The full editing
+experience (tree-sitter highlighting/indent, structural indent, a run command) is
+editor glue + grammar config that lives in your own dotfiles and in
+`tree-sitter-lish`, not here. This is the "just talk to the LSP" starting point.
+
+Drop-in configuration for Neovim 0.11+ using the built-in `vim.lsp.config` /
+`vim.lsp.enable` API. No external plugins required.
 
 ## Install
 

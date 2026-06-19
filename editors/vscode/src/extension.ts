@@ -6,6 +6,7 @@ import {
     TransportKind,
 } from 'vscode-languageclient/node';
 import { onTypeFormatting } from './indent';
+import { runFile } from './run';
 
 let client: LanguageClient | undefined;
 
@@ -33,6 +34,11 @@ export function activate(context: vscode.ExtensionContext): void {
             onTypeFormatting,
             '\n', ')', ']', '}',
         ),
+    );
+
+    // :LishRun equivalent — run the active .lish file via the lish CLI.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('lish.run', runFile),
     );
 }
 

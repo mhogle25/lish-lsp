@@ -110,9 +110,10 @@ fn identifierHover(node: *const lish.ast.AstNode, registry: *LishRegistry, index
     return null;
 }
 
-/// Render a user macro found in the workspace index: its stored signature, the
-/// file it is defined in, and a file-derived category footnote (mirroring an
-/// op's `_operation · arithmetic_`).
+/// Render a user macro found in the workspace index: its stored signature, its
+/// docstring (if any), the file it is defined in, and a file-derived category
+/// footnote (mirroring an op's `_operation · arithmetic_`). Matches the head-name
+/// hover in the macro's own file, so a cross-file reference reads the same.
 fn renderIndexMacro(def: workspace_index.MacroDef, allocator: Allocator) Allocator.Error![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
@@ -121,7 +122,14 @@ fn renderIndexMacro(def: workspace_index.MacroDef, allocator: Allocator) Allocat
 
     try buf.appendSlice(allocator, "```lish\n");
     try buf.appendSlice(allocator, def.signature);
-    try buf.appendSlice(allocator, "\n```\n\ndefined in `");
+    try buf.appendSlice(allocator, "\n```");
+
+    if (def.description.len > 0) {
+        try buf.appendSlice(allocator, "\n\n");
+        try appendDocstring(&buf, allocator, def.description);
+    }
+
+    try buf.appendSlice(allocator, "\n\ndefined in `");
     try buf.appendSlice(allocator, basename);
     try buf.appendSlice(allocator, "`\n\n_macro · ");
     try buf.appendSlice(allocator, fileCategory(basename));
@@ -281,11 +289,15 @@ test "hover falls back to the workspace index for a user macro" {
 
     var index = workspace_index.WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
-    try index.indexSource(a, "file:///home/combat.lishmacro", "| strike target dmg | :target");
+    try index.indexSource(a, "file:///home/combat.lishmacro", "## Strikes a target.\n| strike target dmg | :target");
 
     // "strike" is unknown to the registry but defined in the workspace.
     const hover = (try hoverAt("(strike a b)", 1, &registry, &index, a)) orelse return error.NoHover;
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "strike target dmg") != null);
+    // The cross-file hover carries the docstring too (markers stripped), matching
+    // the head-name hover in the macro's own file.
+    try testing.expect(std.mem.indexOf(u8, hover.markdown, "Strikes a target.") != null);
+    try testing.expect(std.mem.indexOf(u8, hover.markdown, "##") == null);
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "defined in `combat.lishmacro`") != null);
     // File-derived category: the basename without the extension.
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "_macro · combat_") != null);
