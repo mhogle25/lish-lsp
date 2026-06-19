@@ -26,17 +26,17 @@ jobs:
           - target: x86_64-windows
             artifact: lish-lsp-windows-x86_64.exe
     steps:
-      # build.zig.zon pins `.lish = .path "../lish-zig"`, so lish-zig must sit
+      # build.zig.zon pins `.lish = .path "../lish"`, so lish must sit
       # beside lish-lsp (same layout as ci.yml).
       - name: Checkout lish-lsp
         uses: actions/checkout@v4
         with:
           path: lish-lsp
-      - name: Checkout lish-zig
+      - name: Checkout lish
         uses: actions/checkout@v4
         with:
-          repository: mhogle25/lish-zig
-          path: lish-zig
+          repository: mhogle25/lish
+          path: lish
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0

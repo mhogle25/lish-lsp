@@ -10,17 +10,17 @@ jobs:
     name: lish-lsp
     runs-on: ubuntu-latest
     steps:
-      # lish-lsp's build.zig.zon pins `.lish = .path "../lish-zig"`, so lish-zig
-      # must sit beside it. Tests against lish-zig's main branch.
+      # lish-lsp's build.zig.zon pins `.lish = .path "../lish"`, so lish
+      # must sit beside it. Tests against lish's main branch.
       - name: Checkout lish-lsp
         uses: actions/checkout@v4
         with:
           path: lish-lsp
-      - name: Checkout lish-zig
+      - name: Checkout lish
         uses: actions/checkout@v4
         with:
-          repository: mhogle25/lish-zig
-          path: lish-zig
+          repository: mhogle25/lish
+          path: lish
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0

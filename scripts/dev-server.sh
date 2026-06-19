@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rebuild lish-lsp (picks up lish-zig source edits too), then exec it, so an LSP
+# Rebuild lish-lsp (picks up lish source edits too), then exec it, so an LSP
 # restart always runs a fresh binary. Build log keeps stdout clean for JSON-RPC;
 # on build failure the last good binary runs.
 set -e

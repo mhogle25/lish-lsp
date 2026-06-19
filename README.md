@@ -1,6 +1,6 @@
 # lish-lsp
 
-Language Server Protocol implementation for [lish](https://github.com/mhogle25/lish-zig).
+Language Server Protocol implementation for [lish](https://github.com/mhogle25/lish).
 
 Provides diagnostics, semantic tokens, and (eventually) hover, completion, and
 go-to-definition for `.lish` and `.lishmacro` files.
@@ -18,7 +18,7 @@ The binary lands at `zig-out/bin/lish-lsp`.
 
 ## Status
 
-Early. Tracking against the B2 milestone in lish-zig's roadmap:
+Early. Tracking against the B2 milestone in lish's roadmap:
 
 - [x] B2.1 — JSON-RPC framing
 - [x] B2.2 — initialize / shutdown handshake
