@@ -1,49 +1,47 @@
 //! LSP server state machine + method dispatch.
 //!
-//! Tracks the protocol lifecycle (uninitialized → initialized → shutdown → exit),
+//! Tracks the protocol lifecycle (uninitialized -> initialized -> shutdown -> exit),
 //! gates which methods may run in each state, and emits JSON-RPC responses through
 //! the supplied writer.
 
 const std = @import("std");
 const lish = @import("lish");
-const protocol = @import("protocol.zig");
-const document_store = @import("document_store.zig");
-const diagnostics_mod = @import("diagnostics.zig");
-const semantic_tokens = @import("semantic_tokens.zig");
-const hover_mod = @import("hover.zig");
-const completion_mod = @import("completion.zig");
-const signature_help_mod = @import("signature_help.zig");
-const lish_registry = @import("lish_registry.zig");
-const definition_mod = @import("definition.zig");
-const workspace_index = @import("workspace_index.zig");
-const uri_mod = @import("uri.zig");
+
+// The analysis engines + plumbing come from the reusable library module
+// (src/root.zig), so the library compiles once and folio-lsp shares the exact
+// same code + types. server.zig and main.zig are the only binary-private files.
+const lish_lsp = @import("lish_lsp");
+const protocol = lish_lsp.protocol;
+const document_store = lish_lsp.document_store;
+const diagnostics_mod = lish_lsp.diagnostics;
+const semantic_tokens = lish_lsp.semantic_tokens;
+const hover_mod = lish_lsp.hover;
+const completion_mod = lish_lsp.completion;
+const signature_help_mod = lish_lsp.signature_help;
+const lish_registry = lish_lsp.lish_registry;
+const definition_mod = lish_lsp.definition;
+const workspace_index = lish_lsp.workspace_index;
+const uri_mod = lish_lsp.uri;
+const core = lish_lsp.server_core;
+const feature_encode = lish_lsp.feature_encode;
 
 pub const DocumentStore = document_store.DocumentStore;
 pub const Document = document_store.Document;
 pub const LishRegistry = lish_registry.LishRegistry;
 pub const WorkspaceIndex = workspace_index.WorkspaceIndex;
 
-pub const State = enum {
-    uninitialized,
-    initialized,
-    shutdown,
-};
-
-/// Standard JSON-RPC error codes that we emit.
-pub const ErrorCode = enum(i32) {
-    parse_error = -32700,
-    invalid_request = -32600,
-    method_not_found = -32601,
-    invalid_params = -32602,
-    internal_error = -32603,
-    server_not_initialized = -32002,
-};
+// Lifecycle, error codes, and generic JSON helpers live in server_core (shared
+// with folio-lsp); re-exported / aliased here so existing references are unchanged.
+pub const State = core.State;
+pub const ErrorCode = core.ErrorCode;
+const stringField = core.stringField;
+const writeJsonString = core.writeJsonString;
 
 pub const Server = struct {
     state: State = .uninitialized,
     /// Set true when the server should exit cleanly (received `exit` after `shutdown`).
     should_exit: bool = false,
-    /// Set true when exit was received without a prior shutdown — caller should
+    /// Set true when exit was received without a prior shutdown; caller should
     /// terminate with a nonzero status per LSP spec.
     exit_was_unclean: bool = false,
     writer: *std.Io.Writer,
@@ -69,6 +67,12 @@ pub const Server = struct {
     /// Workspace root paths from `initialize` (`workspaceFolders`/`rootUri`/
     /// `rootPath`). Each path and the backing list are owned by `allocator`.
     roots: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Host-vocabulary file specs from `initialize`
+    /// (`initializationOptions.vocabulary`): each a path to a `lish --dump-ops`
+    /// JSON file, absolute or relative to the first workspace root. Merged into
+    /// the standard registry on first use. Each string and the list are owned by
+    /// `allocator`.
+    vocabulary_specs: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, log: *std.Io.Writer) Server {
         return .{
@@ -86,12 +90,34 @@ pub const Server = struct {
         if (server.index) |*index| index.deinit();
         for (server.roots.items) |root| server.allocator.free(root);
         server.roots.deinit(server.allocator);
+        for (server.vocabulary_specs.items) |spec| server.allocator.free(spec);
+        server.vocabulary_specs.deinit(server.allocator);
     }
 
-    /// Build the vocabulary registry on first use and return it thereafter.
+    /// Build the vocabulary registry on first use and return it thereafter. Host
+    /// vocabulary files (`initializationOptions.vocabulary`) are merged in right
+    /// after the standard vocabulary, so host ops behave like builtins.
     fn ensureRegistry(server: *Server) std.mem.Allocator.Error!*LishRegistry {
-        if (server.registry == null) server.registry = try LishRegistry.init(server.allocator);
+        if (server.registry == null) {
+            server.registry = try LishRegistry.init(server.allocator);
+            server.loadVocabularies(&server.registry.?);
+        }
         return &server.registry.?;
+    }
+
+    /// Merge host vocabulary into `registry` (explicit specs + per-project
+    /// `lish.ops.json`). Generic loading lives in `server_core`.
+    fn loadVocabularies(server: *Server, registry: *LishRegistry) void {
+        _ = core.loadVocabularies(
+            "lish-lsp",
+            core.PROJECT_VOCABULARY_FILE,
+            server.io,
+            server.log,
+            server.allocator,
+            registry,
+            server.vocabulary_specs.items,
+            server.roots.items,
+        );
     }
 
     /// The registry appropriate to `uri`: the config-ops-included one for a lish
@@ -134,13 +160,8 @@ pub const Server = struct {
     }
 
     fn dispatch(server: *Server, method: []const u8, id: ?std.json.Value, params: ?std.json.Value) !void {
-        // Lifecycle gating.
-        if (server.state == .uninitialized and !std.mem.eql(u8, method, "initialize") and !std.mem.eql(u8, method, "exit")) {
-            if (id) |req_id| try server.sendError(req_id, .server_not_initialized, "server not initialized");
-            return;
-        }
-        if (server.state == .shutdown and !std.mem.eql(u8, method, "exit")) {
-            if (id) |req_id| try server.sendError(req_id, .invalid_request, "server has shut down");
+        if (core.lifecycleReject(server.state, method)) |rej| {
+            if (id) |req_id| try server.sendError(req_id, rej.code, rej.message);
             return;
         }
 
@@ -148,7 +169,7 @@ pub const Server = struct {
             const req_id = id orelse return; // initialize must be a request
             try server.handleInitialize(req_id, params);
         } else if (std.mem.eql(u8, method, "initialized")) {
-            // Notification — no response. State already moved on the initialize response.
+            // Notification: no response. State already moved on the initialize response.
         } else if (std.mem.eql(u8, method, "shutdown")) {
             const req_id = id orelse return;
             server.state = .shutdown;
@@ -212,7 +233,7 @@ pub const Server = struct {
         const changes = changes_val.array.items;
         if (changes.len == 0) return;
 
-        // We advertised full sync (kind 1) — take the last change's `text`.
+        // We advertised full sync (kind 1): take the last change's `text`.
         const last = changes[changes.len - 1];
         if (last != .object) return;
         const text_val = last.object.get("text") orelse return;
@@ -224,7 +245,7 @@ pub const Server = struct {
     }
 
     /// Parse the document and emit a publishDiagnostics notification.
-    /// Always emits — even an empty diagnostic list, so the editor clears
+    /// Always emits, even an empty diagnostic list, so the editor clears
     /// stale errors from a previous parse.
     fn publishDiagnostics(server: *Server, uri: []const u8) !void {
         const doc = server.documents.get(uri) orelse return;
@@ -254,21 +275,9 @@ pub const Server = struct {
 
         try bw.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
         try writeJsonString(bw, uri);
-        try bw.print("\",\"version\":{d},\"diagnostics\":[", .{doc.version});
-
-        for (diags.items, 0..) |d, i| {
-            if (i != 0) try bw.writeByte(',');
-            const start = line_table.position(d.start_byte);
-            const end = line_table.position(d.end_byte);
-            try bw.print(
-                "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"severity\":{d},\"source\":\"lish\",\"message\":\"",
-                .{ start.line, start.character, end.line, end.character, @intFromEnum(d.severity) },
-            );
-            try writeJsonString(bw, d.message);
-            try bw.writeAll("\"}");
-        }
-
-        try bw.writeAll("]}}");
+        try bw.print("\",\"version\":{d},\"diagnostics\":", .{doc.version});
+        try feature_encode.diagnostics(bw, diags.items, line_table, "lish");
+        try bw.writeAll("}}");
 
         try protocol.writeMessage(server.writer, body.written());
     }
@@ -292,6 +301,10 @@ pub const Server = struct {
             server.log.print("lish-lsp: collectRoots failed: {s}\n", .{@errorName(err)}) catch {};
             server.log.flush() catch {};
         };
+        server.collectVocabularySpecs(params) catch |err| {
+            server.log.print("lish-lsp: collectVocabularySpecs failed: {s}\n", .{@errorName(err)}) catch {};
+            server.log.flush() catch {};
+        };
 
         var buf: [2048]u8 = undefined;
         var bw = std.Io.Writer.fixed(&buf);
@@ -310,38 +323,16 @@ pub const Server = struct {
         try server.sendResult(id, bw.buffered());
     }
 
-    /// Record the workspace roots from `initialize` params as filesystem paths.
-    /// Precedence follows the spec: `workspaceFolders` (each folder's `uri`),
-    /// then the deprecated `rootUri`, then the deprecated `rootPath`. URIs are
-    /// decoded to paths; a non-`file://` URI is skipped.
+    /// Record the workspace roots from `initialize` params (generic; lives in
+    /// `server_core`).
     fn collectRoots(server: *Server, params: ?std.json.Value) !void {
-        const p = params orelse return;
-        if (p != .object) return;
-
-        if (p.object.get("workspaceFolders")) |folders| {
-            if (folders == .array) {
-                for (folders.array.items) |folder| {
-                    if (folder != .object) continue;
-                    const folder_uri = stringField(folder.object, "uri") orelse continue;
-                    try server.addRootFromUri(folder_uri);
-                }
-                return;
-            }
-        }
-        if (stringField(p.object, "rootUri")) |root_uri| {
-            try server.addRootFromUri(root_uri);
-            return;
-        }
-        if (stringField(p.object, "rootPath")) |root_path| {
-            try server.roots.append(server.allocator, try server.allocator.dupe(u8, root_path));
-        }
+        return core.collectRoots(server.allocator, &server.roots, params);
     }
 
-    /// Decode a `file://` URI to a path and append it as a root (skipping a
-    /// non-file URI).
-    fn addRootFromUri(server: *Server, root_uri: []const u8) !void {
-        const path = (try uri_mod.toPath(server.allocator, root_uri)) orelse return;
-        try server.roots.append(server.allocator, path);
+    /// Record `initializationOptions.vocabulary` (a string or array of strings)
+    /// as host-vocabulary file specs. Anything else is ignored.
+    fn collectVocabularySpecs(server: *Server, params: ?std.json.Value) !void {
+        return core.collectVocabularySpecs(server.allocator, &server.vocabulary_specs, params);
     }
 
     fn handleSemanticTokensFull(server: *Server, id: std.json.Value, params: ?std.json.Value) !void {
@@ -382,7 +373,7 @@ pub const Server = struct {
         const td = textDocumentOf(params) orelse return server.sendResult(id, "null");
         const uri = stringField(td, "uri") orelse return server.sendResult(id, "null");
         const doc = server.documents.get(uri) orelse return server.sendResult(id, "null");
-        const position = positionOf(params) orelse return server.sendResult(id, "null");
+        const position = core.positionOf(params) orelse return server.sendResult(id, "null");
 
         var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
         defer arena.deinit();
@@ -399,17 +390,8 @@ pub const Server = struct {
             .macro => try hover_mod.hoverAtMacro(doc.text, cursor, registry, index, a),
         }) orelse return server.sendResult(id, "null");
 
-        const start = line_table.position(result.start);
-        const end = line_table.position(result.end);
-
         var body: std.Io.Writer.Allocating = .init(a);
-        const bw = &body.writer;
-        try bw.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
-        try writeJsonString(bw, result.markdown);
-        try bw.print(
-            "\"}},\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}",
-            .{ start.line, start.character, end.line, end.character },
-        );
+        try feature_encode.hover(&body.writer, result.markdown, line_table.position(result.start), line_table.position(result.end));
         try server.sendResult(id, body.written());
     }
 
@@ -417,7 +399,7 @@ pub const Server = struct {
         const td = textDocumentOf(params) orelse return server.sendResult(id, "null");
         const uri = stringField(td, "uri") orelse return server.sendResult(id, "null");
         const doc = server.documents.get(uri) orelse return server.sendResult(id, "null");
-        const position = positionOf(params) orelse return server.sendResult(id, "null");
+        const position = core.positionOf(params) orelse return server.sendResult(id, "null");
 
         var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
         defer arena.deinit();
@@ -464,7 +446,7 @@ pub const Server = struct {
         const td = textDocumentOf(params) orelse return server.sendResult(id, "[]");
         const uri = stringField(td, "uri") orelse return server.sendResult(id, "[]");
         const doc = server.documents.get(uri) orelse return server.sendResult(id, "[]");
-        const position = positionOf(params) orelse return server.sendResult(id, "[]");
+        const position = core.positionOf(params) orelse return server.sendResult(id, "[]");
 
         var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
         defer arena.deinit();
@@ -481,28 +463,8 @@ pub const Server = struct {
 
         // The replaced word runs from where it begins to the cursor; the same
         // edit range applies to every item.
-        const start = line_table.position(result.replace_start);
-        const end = line_table.position(cursor);
-
         var body: std.Io.Writer.Allocating = .init(a);
-        const bw = &body.writer;
-        try bw.writeByte('[');
-        for (result.items, 0..) |item, i| {
-            if (i != 0) try bw.writeByte(',');
-            try bw.writeAll("{\"label\":\"");
-            try writeJsonString(bw, item.label);
-            try bw.print("\",\"kind\":{d},\"insertTextFormat\":2,\"detail\":\"", .{completionKind(item.kind)});
-            try writeJsonString(bw, item.detail);
-            try bw.writeAll("\",\"documentation\":\"");
-            try writeJsonString(bw, item.documentation);
-            try bw.print(
-                "\",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"",
-                .{ start.line, start.character, end.line, end.character },
-            );
-            try writeJsonString(bw, item.snippet);
-            try bw.writeAll("\"}}");
-        }
-        try bw.writeByte(']');
+        try feature_encode.completionList(&body.writer, result.items, line_table.position(result.replace_start), line_table.position(cursor));
         try server.sendResult(id, body.written());
     }
 
@@ -510,7 +472,7 @@ pub const Server = struct {
         const td = textDocumentOf(params) orelse return server.sendResult(id, "null");
         const uri = stringField(td, "uri") orelse return server.sendResult(id, "null");
         const doc = server.documents.get(uri) orelse return server.sendResult(id, "null");
-        const position = positionOf(params) orelse return server.sendResult(id, "null");
+        const position = core.positionOf(params) orelse return server.sendResult(id, "null");
 
         var arena = std.heap.ArenaAllocator.init(server.documents.allocator);
         defer arena.deinit();
@@ -525,42 +487,18 @@ pub const Server = struct {
             return server.sendResult(id, "null");
 
         var body: std.Io.Writer.Allocating = .init(a);
-        const bw = &body.writer;
-        try bw.writeAll("{\"signatures\":[{\"label\":\"");
-        try writeJsonString(bw, help.label);
-        try bw.writeAll("\",\"parameters\":[");
-        for (help.params, 0..) |param, i| {
-            if (i != 0) try bw.writeByte(',');
-            try bw.writeAll("{\"label\":\"");
-            try writeJsonString(bw, param);
-            try bw.writeAll("\"}");
-        }
-        try bw.print("]}}],\"activeSignature\":0,\"activeParameter\":{d}}}", .{help.active});
+        try feature_encode.signatureHelp(&body.writer, help);
         try server.sendResult(id, body.written());
     }
 
     /// Emit a success response: `{"jsonrpc":"2.0","id":<id>,"result":<result_json>}`.
     /// `result_json` is a raw JSON fragment (e.g. `"null"` or an object literal).
     fn sendResult(server: *Server, id: std.json.Value, result_json: []const u8) !void {
-        var buf: [4096]u8 = undefined;
-        var bw = std.Io.Writer.fixed(&buf);
-        try bw.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try writeIdValue(&bw, id);
-        try bw.writeAll(",\"result\":");
-        try bw.writeAll(result_json);
-        try bw.writeAll("}");
-        try protocol.writeMessage(server.writer, bw.buffered());
+        return core.sendResult(server.writer, id, result_json);
     }
 
     fn sendError(server: *Server, id: std.json.Value, code: ErrorCode, message: []const u8) !void {
-        var buf: [1024]u8 = undefined;
-        var bw = std.Io.Writer.fixed(&buf);
-        try bw.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try writeIdValue(&bw, id);
-        try bw.print(",\"error\":{{\"code\":{d},\"message\":\"", .{@intFromEnum(code)});
-        try writeJsonString(&bw, message);
-        try bw.writeAll("\"}}");
-        try protocol.writeMessage(server.writer, bw.buffered());
+        return core.sendError(server.writer, id, code, message);
     }
 };
 
@@ -578,42 +516,10 @@ fn languageOf(uri: []const u8) semantic_tokens.Language {
     return if (std.mem.endsWith(u8, uri, lish.MACRO_EXTENSION)) .macro else .expression;
 }
 
-/// Whether `uri` is a lish REPL config file (`…/lish/config.lish`), where the
+/// Whether `uri` is a lish REPL config file (`.../lish/config.lish`), where the
 /// repl-config ops are in scope.
 fn isConfigFile(uri: []const u8) bool {
     return std.mem.endsWith(u8, uri, "/lish/config.lish");
-}
-
-/// Map a completion kind to an LSP `CompletionItemKind`. Macros share the
-/// `Function` icon (LSP has no macro kind); in-scope bindings read as `Variable`.
-fn completionKind(kind: completion_mod.Kind) u32 {
-    return switch (kind) {
-        .keyword => 14, // Keyword
-        .function, .macro => 3, // Function
-        .variable => 6, // Variable
-    };
-}
-
-/// Read the `position` object (`{line, character}`) from request params.
-fn positionOf(params: ?std.json.Value) ?diagnostics_mod.Position {
-    const p = params orelse return null;
-    if (p != .object) return null;
-
-    const pos = p.object.get("position") orelse return null;
-    if (pos != .object) return null;
-
-    const line = pos.object.get("line") orelse return null;
-    const character = pos.object.get("character") orelse return null;
-    if (line != .integer or character != .integer) return null;
-    if (line.integer < 0 or character.integer < 0) return null;
-
-    return .{ .line = @intCast(line.integer), .character = @intCast(character.integer) };
-}
-
-fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
-    const v = obj.get(name) orelse return null;
-    if (v != .string) return null;
-    return v.string;
 }
 
 fn versionField(obj: std.json.ObjectMap) i64 {
@@ -622,41 +528,6 @@ fn versionField(obj: std.json.ObjectMap) i64 {
         .integer => |i| i,
         else => 0,
     };
-}
-
-/// Echo an id back as a JSON value. The spec allows string, integer, or null.
-fn writeIdValue(w: *std.Io.Writer, id: std.json.Value) !void {
-    switch (id) {
-        .string => |s| {
-            try w.writeAll("\"");
-            try writeJsonString(w, s);
-            try w.writeAll("\"");
-        },
-        .integer => |i| try w.print("{d}", .{i}),
-        .number_string => |s| try w.writeAll(s),
-        .null => try w.writeAll("null"),
-        else => try w.writeAll("null"),
-    }
-}
-
-/// Write `s` as the inner bytes of a JSON string literal (no surrounding quotes).
-fn writeJsonString(w: *std.Io.Writer, s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '"' => try w.writeAll("\\\""),
-            '\\' => try w.writeAll("\\\\"),
-            '\n' => try w.writeAll("\\n"),
-            '\r' => try w.writeAll("\\r"),
-            '\t' => try w.writeAll("\\t"),
-            0x08 => try w.writeAll("\\b"),
-            0x0C => try w.writeAll("\\f"),
-            else => if (c < 0x20) {
-                try w.print("\\u{x:0>4}", .{c});
-            } else {
-                try w.writeByte(c);
-            },
-        }
-    }
 }
 
 test "initialize transitions state and emits capabilities" {
@@ -930,7 +801,7 @@ test "semanticTokens/full returns encoded data" {
     const out = out_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":5") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"data\":[") != null);
-    // (+ 1 2) tokenizes to identifier "+" then two numbers — 3 tokens, 15 u32s.
+    // (+ 1 2) tokenizes to identifier "+" then two numbers: 3 tokens, 15 u32s.
     // We don't pin the exact array here (positions are delta-encoded), but it
     // must be non-empty.
     try std.testing.expect(std.mem.indexOf(u8, out, "\"data\":[]") == null);
@@ -1008,6 +879,98 @@ test "initialize records a rootUri as a workspace root" {
 
     try std.testing.expectEqual(@as(usize, 1), server.roots.items.len);
     try std.testing.expectEqualStrings("/home/proj", server.roots.items[0]);
+}
+
+test "host vocabulary from initializationOptions is merged into the registry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    // A host vocabulary file: one op carrying a binding param, so we also prove
+    // the structured roles survive the JSON round-trip end to end.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "vocab.json", .data =
+        \\[ { "name": "eachthing", "category": "host", "description": "Host iter.",
+        \\    "returns": "$none",
+        \\    "params": [ { "name": "x", "role": "binding", "arity": "single" },
+        \\                { "name": "xs", "role": "value", "arity": "single" },
+        \\                { "name": "body", "role": "body", "arity": "single" } ] } ]
+    });
+
+    // Root is the tmp dir (relative to cwd); the vocabulary path is relative to
+    // that root, so resolveVocabularyPath joins them and the read works without
+    // any absolute-path machinery.
+    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [512]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    server.io = io;
+    defer server.deinit();
+
+    const msg = try std.mem.concat(a, u8, &.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootPath\":\"",
+        root,
+        "\",\"initializationOptions\":{\"vocabulary\":[\"vocab.json\"]}}}",
+    });
+    try server.handle(msg, a);
+    try std.testing.expectEqual(@as(usize, 1), server.vocabulary_specs.items.len);
+
+    // ensureRegistry reads the file (via io) and merges the host op, which then
+    // behaves exactly like a builtin: classified, hoverable, with its binding
+    // role intact for scope-aware completion.
+    const registry = try server.ensureRegistry();
+    try std.testing.expectEqual(lish_registry.OperatorClass.function, registry.classifyOperator("eachthing"));
+    const sym = (try registry.lookup("eachthing")).?;
+    try std.testing.expectEqualStrings("eachthing x xs body -> $none", sym.signature);
+    const op = registry.registry.getOperation("eachthing").?;
+    try std.testing.expectEqual(lish.Param.Role.binding, op.signature.params[0].role);
+}
+
+test "per-project lish.ops.json is auto-discovered from the workspace root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var io_instance: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    // Drop the conventionally-named file at the project root; no editor setting.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "lish.ops.json", .data =
+        \\[ { "name": "projop", "category": "host", "description": "A project op.",
+        \\    "returns": "$none", "params": [] } ]
+    });
+    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = std.Io.Writer.fixed(&out_buf);
+    var log_buf: [1024]u8 = undefined;
+    var log_writer = std.Io.Writer.fixed(&log_buf);
+    var server = Server.init(std.testing.allocator, &out_writer, &log_writer);
+    server.io = io;
+    defer server.deinit();
+
+    // initialize with only a root (no `vocabulary` option) -> the server finds
+    // lish.ops.json on its own.
+    const msg = try std.mem.concat(a, u8, &.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootPath\":\"",
+        root,
+        "\"}}",
+    });
+    try server.handle(msg, a);
+
+    const registry = try server.ensureRegistry();
+    try std.testing.expectEqual(lish_registry.OperatorClass.function, registry.classifyOperator("projop"));
 }
 
 test "definition jumps a macro call to its cross-file definition" {
@@ -1183,7 +1146,7 @@ test "completion after a colon offers in-scope bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // "(let total 0 (+ :t)" — completing ":t" inside the body offers `total`.
+    // "(let total 0 (+ :t)": completing ":t" inside the body offers `total`.
     try server.handle(
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///s.lish","languageId":"lish","version":1,"text":"(let total 0 (+ :t)"}}}
     , arena.allocator());
@@ -1263,7 +1226,7 @@ test "signatureHelp reports the active parameter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // "(clamp 0 10 " — `clamp v lo hi`, cursor in the third arg slot.
+    // "(clamp 0 10 ": `clamp v lo hi`, cursor in the third arg slot.
     try server.handle(
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///h.lish","languageId":"lish","version":1,"text":"(clamp 0 10 "}}}
     , arena.allocator());

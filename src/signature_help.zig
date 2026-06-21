@@ -152,7 +152,7 @@ test "active parameter advances with the cursor" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(clamp 0 10 )" — `clamp v lo hi`; cursor in the third argument slot.
+    // "(clamp 0 10 )": `clamp v lo hi`; cursor in the third argument slot.
     const source = "(clamp 0 10 ";
     const help = (try helpAt(source, @intCast(source.len), a)) orelse return error.NoHelp;
     try testing.expectEqualStrings("clamp v lo hi", help.label);
@@ -175,7 +175,7 @@ test "innermost call wins" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(+ 1 (clamp 0 " — cursor inside the inner clamp call (`clamp v lo hi`).
+    // "(+ 1 (clamp 0 ": cursor inside the inner clamp call (`clamp v lo hi`).
     const source = "(+ 1 (clamp 0 ";
     const help = (try helpAt(source, @intCast(source.len), a)) orelse return error.NoHelp;
     try testing.expectEqualStrings("clamp v lo hi", help.label);
@@ -187,7 +187,7 @@ test "variadic parameter stays highlighted past the named ones" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(+ 1 2 3 " — `+ a b ...`; the 3rd+ args clamp onto the last param.
+    // "(+ 1 2 3 ": `+ a b ...`; the 3rd+ args clamp onto the last param.
     const source = "(+ 1 2 3 ";
     const help = (try helpAt(source, @intCast(source.len), a)) orelse return error.NoHelp;
     try testing.expectEqual(@as(u32, 1), help.active); // clamped onto "b"
@@ -198,7 +198,7 @@ test "cursor on the op name yields no help" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(clam" — still typing the op name.
+    // "(clam": still typing the op name.
     try testing.expect((try helpAt("(clam", 5, a)) == null);
 }
 

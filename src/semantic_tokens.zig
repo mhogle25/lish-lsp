@@ -51,12 +51,13 @@ const TYPE_FUNCTION = 6;
 const TYPE_MACRO = 7;
 const TYPE_KEYWORD = 8;
 
-/// A resolved token before delta-encoding: an absolute byte span plus its LSP
-/// token-type index.
-const Token = struct {
+/// An absolute byte span plus its LSP token-type index and modifier bitmask.
+/// Public so folio-lsp can offset these into its outer document and merge.
+pub const Token = struct {
     start: u32,
     end: u32,
     type_index: u32,
+    modifiers: u32 = 0,
 };
 
 fn lessByStart(_: void, a: Token, b: Token) bool {
@@ -98,16 +99,17 @@ fn operatorType(name: []const u8, registry: *const LishRegistry, index: ?*const 
 /// macro definitions; everything else is an expression document.
 pub const Language = enum { expression, macro };
 
-/// Parse `source`, walk it, and return LSP's delta-encoded token stream (5 u32s
-/// per token: deltaLine, deltaStartChar, length, type, modifiers).
-pub fn encode(
+/// Parse `source`, walk it, and resolve each span against `registry` into
+/// absolute `Token`s, sorted by start. The intermediate before delta encoding:
+/// a host language (folio-lsp) offsets these into its document and merges them
+/// with its own tokens.
+pub fn collect(
     source: []const u8,
-    line_table: LineTable,
     registry: *const LishRegistry,
     index: ?*const WorkspaceIndex,
     language: Language,
     allocator: Allocator,
-) Allocator.Error![]u32 {
+) Allocator.Error![]Token {
     var role_spans: []const ast_walk.RoleSpan = undefined;
     var comments: []const lish.token.CommentSpan = undefined;
     switch (language) {
@@ -124,7 +126,7 @@ pub fn encode(
     }
 
     var tokens: std.ArrayList(Token) = .empty;
-    defer tokens.deinit(allocator);
+    errdefer tokens.deinit(allocator);
 
     for (role_spans) |span| {
         try tokens.append(allocator, .{
@@ -138,25 +140,46 @@ pub fn encode(
     }
 
     std.mem.sort(Token, tokens.items, {}, lessByStart);
+    return tokens.toOwnedSlice(allocator);
+}
 
+/// Delta-encode absolute `tokens` (sorted by start) into LSP's u32 stream (5 per
+/// token: deltaLine, deltaStartChar, length, type, modifiers), using
+/// `line_table` to resolve each byte offset to a line/character position.
+pub fn deltaEncode(tokens: []const Token, line_table: LineTable, allocator: Allocator) Allocator.Error![]u32 {
     var out: std.ArrayList(u32) = .empty;
     errdefer out.deinit(allocator);
 
     var prev_line: u32 = 0;
     var prev_char: u32 = 0;
-    for (tokens.items) |token| {
+    for (tokens) |token| {
         const pos = line_table.position(token.start);
         const length = token.end - token.start;
 
         const delta_line = pos.line - prev_line;
         const delta_char = if (delta_line == 0) pos.character - prev_char else pos.character;
 
-        try out.appendSlice(allocator, &.{ delta_line, delta_char, length, token.type_index, 0 });
+        try out.appendSlice(allocator, &.{ delta_line, delta_char, length, token.type_index, token.modifiers });
 
         prev_line = pos.line;
         prev_char = pos.character;
     }
     return out.toOwnedSlice(allocator);
+}
+
+/// Parse `source`, walk it, and return LSP's delta-encoded token stream. The
+/// standalone composition of `collect` + `deltaEncode`.
+pub fn encode(
+    source: []const u8,
+    line_table: LineTable,
+    registry: *const LishRegistry,
+    index: ?*const WorkspaceIndex,
+    language: Language,
+    allocator: Allocator,
+) Allocator.Error![]u32 {
+    const tokens = try collect(source, registry, index, language, allocator);
+    defer allocator.free(tokens);
+    return deltaEncode(tokens, line_table, allocator);
 }
 
 // Tests

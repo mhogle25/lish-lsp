@@ -1,6 +1,6 @@
 //! In-memory document store keyed by URI.
 //!
-//! The store owns its keys (URIs) and values (texts) — both are duped from
+//! The store owns its keys (URIs) and values (texts), both are duped from
 //! whatever transient slice the LSP message body provided, since per-message
 //! arenas are reset between messages.
 

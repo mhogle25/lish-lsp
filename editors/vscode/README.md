@@ -15,7 +15,7 @@ npm run compile
 ## Run in development
 
 Open this folder in VS Code, then `F5` to launch an Extension Development Host
-with the extension loaded. The host needs `lish-lsp` reachable — either set
+with the extension loaded. The host needs `lish-lsp` reachable: either set
 the `lish.server.path` setting or put the binary on `PATH`.
 
 ## Package as `.vsix`
@@ -30,5 +30,5 @@ The resulting `lish-lsp-vscode-*.vsix` can be installed via
 
 ## Settings
 
-- `lish.server.path` — absolute path to the `lish-lsp` binary. Defaults to
+- `lish.server.path`: absolute path to the `lish-lsp` binary. Defaults to
   `lish-lsp` (must be on `$PATH`).

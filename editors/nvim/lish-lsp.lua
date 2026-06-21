@@ -43,5 +43,5 @@ vim.lsp.enable('lish-lsp')
 --     completion trigger characters on purpose (a lisp opens every call with
 --     `(`); completion fires on the operator name's first letter instead.
 --   * If you use an autopairs plugin with a "insert () after functions"
---     completion hook, disable it for the `lish` filetype — lish calls are
+--     completion hook, disable it for the `lish` filetype; lish calls are
 --     prefix `(op ...)`, not `op()`.

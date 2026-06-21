@@ -332,7 +332,7 @@ test "scopeRefAt returns the bare identifier behind a colon" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(when :hp)" — ":" at 6, "hp" at [7,9).
+    // "(when :hp)": ":" at 6, "hp" at [7,9).
     const root = try parser.parse(a, "(when :hp)");
     const hit = scopeRefAt(root, 7) orelse return error.NoScopeRef; // inside "hp"
     try std.testing.expect(hit.body == .value_literal);
@@ -344,7 +344,7 @@ test "scopeRefAt is null on a bare identifier with no colon" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(foo bar)" — "bar" is a plain argument, not a scope reference.
+    // "(foo bar)": "bar" is a plain argument, not a scope reference.
     const root = try parser.parse(a, "(foo bar)");
     try std.testing.expect(scopeRefAt(root, 6) == null);
 }
@@ -354,7 +354,7 @@ test "scopeRefAt is null on a computed key but still descends into it" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // ":(f x)" — the ":" key is computed; the "f"/"x" inside are not scope refs.
+    // ":(f x)": the ":" key is computed; the "f"/"x" inside are not scope refs.
     const root = try parser.parse(a, ":(f x)");
     try std.testing.expect(scopeRefAt(root, 2) == null); // on "f"
     try std.testing.expect(scopeRefAt(root, 4) == null); // on "x"

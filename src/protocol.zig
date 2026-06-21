@@ -6,7 +6,7 @@
 //!     \r\n
 //!     <N bytes of JSON body>
 //!
-//! We only read `Content-Length` — other headers are tolerated but ignored.
+//! We only read `Content-Length`; other headers are tolerated but ignored.
 
 const std = @import("std");
 

@@ -72,7 +72,7 @@ pub const WorkspaceIndex = struct {
     /// already a lish error).
     pub fn indexSource(self: *WorkspaceIndex, scratch: Allocator, doc_uri: []const u8, source: []const u8) Allocator.Error!void {
         // WithComments so each macro's leading docstring populates `description`
-        // (plain parseMacroModule leaves it empty — see docstringBefore).
+        // (plain parseMacroModule leaves it empty; see docstringBefore).
         const module = (try lish.macro_parser.parseMacroModuleWithComments(scratch, source)).module;
         const arena = self.arena.allocator();
 
@@ -240,7 +240,7 @@ test "indexSource records a macro's header position and signature" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // "| double x | * :x 2" — "double" header id at bytes [2,8).
+    // "| double x | * :x 2": "double" header id at bytes [2,8).
     try index.indexSource(a, "file:///lib.lishmacro", "| double x | * :x 2");
 
     const def = index.lookup("double") orelse return error.NotFound;

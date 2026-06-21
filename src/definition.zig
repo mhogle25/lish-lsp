@@ -3,11 +3,11 @@
 //!
 //! Two entry points, one per document language:
 //!
-//!   * `defineExpression` (`.lish`) — a bare identifier that names a workspace
+//!   * `defineExpression` (`.lish`): a bare identifier that names a workspace
 //!     macro jumps to that macro's header. Builtins, stdlib ops, and unknown
 //!     names have no source location, so they resolve to nothing.
 //!
-//!   * `defineMacro` (`.lishmacro`) — inside a macro body, a scope reference
+//!   * `defineMacro` (`.lishmacro`): inside a macro body, a scope reference
 //!     (`:x`) jumps to the head parameter it names, and a bare identifier that
 //!     names a macro jumps to that macro's header (a sibling in the same module
 //!     first, then the workspace index). Standing on a head name or parameter,
@@ -158,7 +158,7 @@ test "defineExpression jumps a macro call to its workspace definition" {
     var index = try indexWith(a, "file:///lib.lishmacro", "| double x | * :x 2");
     defer index.deinit();
 
-    // "(double 5)" — cursor on "double" at byte 1.
+    // "(double 5)": cursor on "double" at byte 1.
     const loc = (try defineExpression("(double 5)", 1, &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///lib.lishmacro", loc.uri);
     try testing.expectEqual(@as(u32, 2), loc.start); // "double" header id
@@ -173,7 +173,7 @@ test "defineExpression resolves a macro used as an argument" {
     var index = try indexWith(a, "file:///lib.lishmacro", "| helper | 1");
     defer index.deinit();
 
-    // "(f helper)" — "helper" as a bare-identifier argument at byte 3.
+    // "(f helper)": "helper" as a bare-identifier argument at byte 3.
     const loc = (try defineExpression("(f helper)", 3, &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///lib.lishmacro", loc.uri);
 }
@@ -209,7 +209,7 @@ test "defineMacro jumps a scope ref to its head parameter" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // "| double x | * :x 2" — param "x" at byte 9; ":x" body ref names it.
+    // "| double x | * :x 2": param "x" at byte 9; ":x" body ref names it.
     const source = "| double x | * :x 2";
     const ref_byte: u32 = @intCast(std.mem.indexOf(u8, source, ":x").? + 1); // on the "x"
     const loc = (try defineMacro(source, ref_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
@@ -226,7 +226,7 @@ test "defineMacro resolves a body call to a sibling macro in the same module" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // "| a x | :x | b y | a :y" — "a" called inside b's body resolves to a's head.
+    // "| a x | :x | b y | a :y": "a" called inside b's body resolves to a's head.
     const source = "| a x | :x | b y | a :y";
     const call_byte: u32 = @intCast(std.mem.lastIndexOfScalar(u8, source, 'a').?); // the call in b's body
     const loc = (try defineMacro(source, call_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
@@ -242,7 +242,7 @@ test "defineMacro falls back to the workspace index for a cross-file macro" {
     var index = try indexWith(a, "file:///other.lishmacro", "| shared | 1");
     defer index.deinit();
 
-    // "| wrap | shared" — "shared" is defined in another file.
+    // "| wrap | shared": "shared" is defined in another file.
     const source = "| wrap | shared";
     const call_byte: u32 = @intCast(std.mem.indexOf(u8, source, "shared").?);
     const loc = (try defineMacro(source, call_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;

@@ -60,6 +60,43 @@ fn classifyOp(op: Operation) OperatorClass {
     return .function;
 }
 
+/// JSON shape of one operation in a `lish --dump-ops` array. The display
+/// `signature` string in the dump is ignored (and tolerated via
+/// `ignore_unknown_fields`): it is re-rendered from the structured `params`.
+const VocabParam = struct {
+    name: []const u8,
+    role: []const u8 = "value",
+    arity: []const u8 = "single",
+};
+
+const VocabOp = struct {
+    name: []const u8,
+    category: ?[]const u8 = null,
+    description: []const u8 = "",
+    returns: []const u8 = "value",
+    binding_pairs: bool = false,
+    params: []const VocabParam = &.{},
+};
+
+/// Registered for host vocabulary ops so their metadata is discoverable; never
+/// executed (the server only reads op metadata, it never calls an op).
+fn vocabularyNoop(args: lish.Args) lish.exec.ExecError!?lish.Value {
+    _ = args;
+    return null;
+}
+
+fn parseRole(text: []const u8) lish.Param.Role {
+    if (std.mem.eql(u8, text, "binding")) return .binding;
+    if (std.mem.eql(u8, text, "body")) return .body;
+    return .value;
+}
+
+fn parseArity(text: []const u8) lish.Param.Arity {
+    if (std.mem.eql(u8, text, "optional")) return .optional;
+    if (std.mem.eql(u8, text, "variadic")) return .variadic;
+    return .single;
+}
+
 pub const LishRegistry = struct {
     registry: Registry,
     allocator: Allocator,
@@ -80,7 +117,7 @@ pub const LishRegistry = struct {
         return .{ .registry = registry, .allocator = allocator };
     }
 
-    /// Like `init`, plus the REPL config ops — for tooling on a lish config file.
+    /// Like `init`, plus the REPL config ops, for tooling on a lish config file.
     pub fn initWithConfigOps(allocator: Allocator) Allocator.Error!LishRegistry {
         var self = try init(allocator);
         errdefer self.deinit();
@@ -101,6 +138,53 @@ pub const LishRegistry = struct {
             config.deinit();
             self.allocator.destroy(config);
         }
+    }
+
+    pub const VocabularyError = error{InvalidVocabulary} || Allocator.Error;
+
+    /// Merge a host vocabulary (a `lish --dump-ops` JSON array) into the registry
+    /// as metadata-only operations, reconstructing each op's structured signature
+    /// (params, roles, arity) so completion, hover, snippets, AND binding/scope
+    /// analysis treat host ops exactly like builtins. A name already known is
+    /// skipped, so a host vocabulary cannot shadow the core. Returns the count
+    /// merged. Kept strings are duped into the registry arena (registry lifetime).
+    pub fn loadVocabulary(self: *LishRegistry, json_bytes: []const u8) VocabularyError!usize {
+        const parsed = std.json.parseFromSlice(
+            []VocabOp,
+            self.allocator,
+            json_bytes,
+            .{ .ignore_unknown_fields = true },
+        ) catch return error.InvalidVocabulary;
+        defer parsed.deinit();
+
+        const arena = self.registry.macroAllocator();
+        var count: usize = 0;
+        for (parsed.value) |source_op| {
+            if (source_op.name.len == 0) continue;
+            if (self.registry.getOperation(source_op.name) != null) continue;
+            if (self.registry.getMacro(source_op.name) != null) continue;
+
+            const params = try arena.alloc(lish.Param, source_op.params.len);
+            for (source_op.params, 0..) |source_param, i| params[i] = .{
+                .name = try arena.dupe(u8, source_param.name),
+                .role = parseRole(source_param.role),
+                .arity = parseArity(source_param.arity),
+            };
+
+            var op = lish.Operation.fromFn(vocabularyNoop, .{
+                .signature = .{
+                    .params = params,
+                    .returns = try arena.dupe(u8, source_op.returns),
+                    .binding_pairs = source_op.binding_pairs,
+                },
+                .description = try arena.dupe(u8, source_op.description),
+            });
+            if (source_op.category) |category| op.category = try arena.dupe(u8, category);
+
+            try self.registry.registerOperation(self.allocator, try arena.dupe(u8, source_op.name), op);
+            count += 1;
+        }
+        return count;
     }
 
     /// Classify a name appearing in callable (operator) position.
@@ -270,6 +354,70 @@ test "collectMatching returns prefix-matching ops and macros" {
         if (std.mem.eql(u8, candidate.name, "clamp")) saw_clamp = true;
     }
     try std.testing.expect(saw_clamp);
+}
+
+test "loadVocabulary merges host ops with structured param roles" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var lr = try LishRegistry.init(a);
+    defer lr.deinit();
+
+    const json =
+        \\[
+        \\  { "name": "each", "category": "host", "description": "Iterate.",
+        \\    "signature": "each item list body -> $none", "returns": "$none",
+        \\    "params": [
+        \\      { "name": "item", "role": "binding", "arity": "single" },
+        \\      { "name": "list", "role": "value", "arity": "single" },
+        \\      { "name": "body", "role": "body", "arity": "single" }
+        \\    ] }
+        \\]
+    ;
+    const merged = try lr.loadVocabulary(json);
+    try std.testing.expectEqual(@as(usize, 1), merged);
+
+    // Visible as a known operator (so semantic tokens stop flagging it unknown).
+    try std.testing.expectEqual(OperatorClass.function, lr.classifyOperator("each"));
+
+    // Hover re-renders the signature from the structured params + description.
+    const sym = (try lr.lookup("each")) orelse return error.MissingSymbol;
+    try std.testing.expectEqualStrings("each item list body -> $none", sym.signature);
+    try std.testing.expectEqualStrings("Iterate.", sym.description);
+
+    // The fidelity point: param roles survive, so scope/binding analysis works.
+    const op = lr.registry.getOperation("each").?;
+    try std.testing.expectEqual(lish.Param.Role.binding, op.signature.params[0].role);
+    try std.testing.expectEqual(lish.Param.Role.value, op.signature.params[1].role);
+    try std.testing.expectEqual(lish.Param.Role.body, op.signature.params[2].role);
+}
+
+test "loadVocabulary does not shadow a builtin" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var lr = try LishRegistry.init(a);
+    defer lr.deinit();
+
+    const merged = try lr.loadVocabulary(
+        \\[ { "name": "map", "description": "evil override", "returns": "x", "params": [] } ]
+    );
+    try std.testing.expectEqual(@as(usize, 0), merged);
+    const sym = (try lr.lookup("map")).?;
+    try std.testing.expect(!std.mem.eql(u8, sym.description, "evil override"));
+}
+
+test "loadVocabulary rejects malformed JSON" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var lr = try LishRegistry.init(a);
+    defer lr.deinit();
+
+    try std.testing.expectError(error.InvalidVocabulary, lr.loadVocabulary("not json"));
 }
 
 test "collectMatching classifies a keyword-category op" {

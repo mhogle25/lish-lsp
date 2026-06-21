@@ -112,7 +112,7 @@ fn identifierHover(node: *const lish.ast.AstNode, registry: *LishRegistry, index
 
 /// Render a user macro found in the workspace index: its stored signature, its
 /// docstring (if any), the file it is defined in, and a file-derived category
-/// footnote (mirroring an op's `_operation · arithmetic_`). Matches the head-name
+/// footnote (mirroring an op's `_operation - arithmetic_`). Matches the head-name
 /// hover in the macro's own file, so a cross-file reference reads the same.
 fn renderIndexMacro(def: workspace_index.MacroDef, allocator: Allocator) Allocator.Error![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
@@ -131,7 +131,7 @@ fn renderIndexMacro(def: workspace_index.MacroDef, allocator: Allocator) Allocat
 
     try buf.appendSlice(allocator, "\n\ndefined in `");
     try buf.appendSlice(allocator, basename);
-    try buf.appendSlice(allocator, "`\n\n_macro · ");
+    try buf.appendSlice(allocator, "`\n\n_macro - ");
     try buf.appendSlice(allocator, fileCategory(basename));
     try buf.appendSlice(allocator, "_");
     return buf.toOwnedSlice(allocator);
@@ -213,7 +213,7 @@ fn renderMarkdown(symbol: lish_registry.Symbol, allocator: Allocator) Allocator.
         .operation => {
             try buf.appendSlice(allocator, "\n\n_operation");
             if (symbol.category) |category| {
-                try buf.appendSlice(allocator, " · ");
+                try buf.appendSlice(allocator, " - ");
                 try buf.appendSlice(allocator, category);
             }
             try buf.appendSlice(allocator, "_");
@@ -300,7 +300,7 @@ test "hover falls back to the workspace index for a user macro" {
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "##") == null);
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "defined in `combat.lishmacro`") != null);
     // File-derived category: the basename without the extension.
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "_macro · combat_") != null);
+    try testing.expect(std.mem.indexOf(u8, hover.markdown, "_macro - combat_") != null);
 }
 
 test "macro hover on the head name shows its derived signature" {
@@ -311,7 +311,7 @@ test "macro hover on the head name shows its derived signature" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "## doubles x\n| double x | * :x 2" — cursor on "double" (byte 15).
+    // "## doubles x\n| double x | * :x 2": cursor on "double" (byte 15).
     const source = "## doubles x\n| double x | * :x 2";
     const hover = (try hoverAtMacro(source, 15, &registry, null, a)) orelse return error.NoHover;
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "double x") != null);
@@ -329,7 +329,7 @@ test "macro hover inside the body resolves a builtin" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "| double x | * :x 2" — "*" sits at byte 13.
+    // "| double x | * :x 2": "*" sits at byte 13.
     const hover = (try hoverAtMacro("| double x | * :x 2", 13, &registry, null, a)) orelse return error.NoHover;
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "_operation") != null);
 }

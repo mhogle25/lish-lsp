@@ -1,7 +1,7 @@
 //! `textDocument/completion`.
 //!
-//! In callable position, completes *vocabulary names* — builtins, stdlib/host
-//! macros, and workspace macros (from the go-to-definition index) — by the word
+//! In callable position, completes *vocabulary names*: builtins, stdlib/host
+//! macros, and workspace macros (from the go-to-definition index), by the word
 //! prefix under the cursor (pure byte scanning, robust mid-edit), each carrying
 //! its kind, signature, and description. Suppressed inside a string/comment.
 //!
@@ -119,7 +119,7 @@ pub fn collect(
     return .{ .items = try items.toOwnedSlice(allocator), .replace_start = replace_start };
 }
 
-/// Completion right after a `:` — the names in scope at the cursor. In an
+/// Completion right after a `:`, the names in scope at the cursor. In an
 /// expression that is the bindings of the enclosing `let`/`map`/`pipe`/... forms;
 /// in a `.lishmacro` body it also includes the enclosing macro's head parameters.
 fn scopeCompletion(
@@ -238,7 +238,7 @@ test "completes a builtin prefix in operator position" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "(ma" — cursor at end, prefix "ma".
+    // "(ma": cursor at end, prefix "ma".
     const result = (try collect("(ma", 3, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start); // after "("
     try testing.expect(contains(result, "map"));
@@ -255,7 +255,7 @@ test "completes after a single-term sigil" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "$no" — single-term call prefix "no".
+    // "$no": single-term call prefix "no".
     const result = (try collect("$no", 3, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start);
     try testing.expect(std.mem.startsWith(u8, result.items[0].label, "no"));
@@ -283,7 +283,7 @@ test "scope completion offers a let binding after a colon" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "(let total 0 (+ :t" — completing ":t" inside the body offers `total`.
+    // "(let total 0 (+ :t": completing ":t" inside the body offers `total`.
     const source = "(let total 0 (+ :t";
     const cursor: u32 = @intCast(source.len);
     const result = (try collect(source, cursor, &registry, null, .expression, a)) orelse return error.NoResult;
@@ -299,7 +299,7 @@ test "scope completion offers macro head params in a body" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "| double x | (* :x" — completing ":x" in the body offers the head param.
+    // "| double x | (* :x": completing ":x" in the body offers the head param.
     const source = "| double x | (* :x";
     const cursor: u32 = @intCast(source.len);
     const result = (try collect(source, cursor, &registry, null, .macro, a)) orelse return error.NoResult;
@@ -374,7 +374,7 @@ test "symbolic operator name is part of the prefix" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "(?" — prefix "?" should reach the random ops "?" and "?<".
+    // "(?": prefix "?" should reach the random ops "?" and "?<".
     const result = (try collect("(?", 2, &registry, null, .expression, a)) orelse return error.NoCompletion;
     try testing.expectEqual(@as(u32, 1), result.replace_start);
     try testing.expect(contains(result, "?"));

@@ -20,12 +20,12 @@ The binary lands at `zig-out/bin/lish-lsp`.
 
 Early. Tracking against the B2 milestone in lish's roadmap:
 
-- [x] B2.1 — JSON-RPC framing
-- [x] B2.2 — initialize / shutdown handshake
-- [x] B2.3 — Document sync
-- [x] B2.4 — Diagnostics from parser errors
-- [x] B2.5 — Semantic tokens
-- [x] B2.6 — Editor configs (Neovim + VS Code)
+- [x] B2.1: JSON-RPC framing
+- [x] B2.2: initialize / shutdown handshake
+- [x] B2.3: Document sync
+- [x] B2.4: Diagnostics from parser errors
+- [x] B2.5: Semantic tokens
+- [x] B2.6: Editor configs (Neovim + VS Code)
 
 ## Editors
 

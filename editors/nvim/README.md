@@ -1,6 +1,6 @@
 # lish-lsp for Neovim
 
-**Minimal example — connects the language server, nothing more.** The full editing
+**Minimal example: connects the language server, nothing more.** The full editing
 experience (tree-sitter highlighting/indent, structural indent, a run command) is
 editor glue + grammar config that lives in your own dotfiles and in
 `tree-sitter-lish`, not here. This is the "just talk to the LSP" starting point.

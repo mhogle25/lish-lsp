@@ -6,7 +6,8 @@
 
 const std = @import("std");
 const lish = @import("lish");
-const protocol = @import("protocol.zig");
+const lish_lsp = @import("lish_lsp");
+const protocol = lish_lsp.protocol;
 const Server = @import("server.zig").Server;
 
 pub fn main(init: std.process.Init) !u8 {

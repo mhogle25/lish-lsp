@@ -1,6 +1,6 @@
 //! LSP snippet construction for completion items.
 //!
-//! A completed call expands to `<name> ${1:p1} ${2:p2} …` so the editor drops
+//! A completed call expands to `<name> ${1:p1} ${2:p2} ...` so the editor drops
 //! the cursor on each parameter in turn. Parameter names are escaped for the
 //! snippet grammar (`$`, `}`, `\` are special).
 
@@ -16,7 +16,7 @@ pub fn writePlaceholder(w: *std.Io.Writer, n: usize, param: []const u8) std.Io.W
     try w.writeByte('}');
 }
 
-/// Build the snippet body `name ${1:p1} ${2:p2} …` from ordered parameter names.
+/// Build the snippet body `name ${1:p1} ${2:p2} ...` from ordered parameter names.
 /// With no parameters it is just `name` (a plain insert).
 pub fn build(allocator: Allocator, name: []const u8, params: []const []const u8) Allocator.Error![]const u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);

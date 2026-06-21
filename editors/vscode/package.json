@@ -4,6 +4,10 @@
   "description": "Language support for lish (diagnostics + semantic tokens via lish-lsp).",
   "version": "0.0.1",
   "publisher": "lish",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mhogle25/lish-lsp.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -18,8 +22,14 @@
     "languages": [
       {
         "id": "lish",
-        "aliases": ["Lish", "lish"],
-        "extensions": [".lish", ".lishmacro"],
+        "aliases": [
+          "Lish",
+          "lish"
+        ],
+        "extensions": [
+          ".lish",
+          ".lishmacro"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -36,6 +46,14 @@
           "type": "string",
           "default": "lish",
           "description": "Absolute path to the lish CLI binary used by 'Lish: Run File', or just the name if it's on $PATH. Point this at scripts/dev-run.sh for a build-then-run dev loop."
+        },
+        "lish.vocabulary": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Paths to host-vocabulary JSON files produced by '<your-host> --dump-ops'. Absolute, or relative to the first workspace folder. Their ops appear in completion, hover, and signature help as if they were builtins, with full binding/scope analysis."
         }
       }
     },
@@ -82,7 +100,8 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run bundle",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"
   },
@@ -92,6 +111,7 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.3.0"
   }
 }

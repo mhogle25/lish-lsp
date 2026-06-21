@@ -19,8 +19,14 @@ export function activate(context: vscode.ExtensionContext): void {
         debug: { command: serverPath, transport: TransportKind.stdio },
     };
 
+    // Host-vocabulary files (e.g. `myhost --dump-ops > ops.json`) teach the
+    // server about a host's custom ops so they get completion/hover/signature
+    // help like builtins. Paths are absolute or relative to the workspace root.
+    const vocabulary = config.get<string[]>('vocabulary', []);
+
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'lish' }],
+        initializationOptions: { vocabulary },
     };
 
     client = new LanguageClient('lish-lsp', 'Lish Language Server', serverOptions, clientOptions);
@@ -36,7 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ),
     );
 
-    // :LishRun equivalent — run the active .lish file via the lish CLI.
+    // :LishRun equivalent: run the active .lish file via the lish CLI.
     context.subscriptions.push(
         vscode.commands.registerCommand('lish.run', runFile),
     );

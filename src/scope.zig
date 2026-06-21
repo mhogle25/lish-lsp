@@ -195,7 +195,7 @@ test "let binding is in scope in the body" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(let n 5 (+ :n))" — cursor inside the body, on the "n" of ":n".
+    // "(let n 5 (+ :n))": cursor inside the body, on the "n" of ":n".
     const source = "(let n 5 (+ :n))";
     const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":n").? + 1);
     const names = try namesAt(source, cursor, a);
@@ -207,7 +207,7 @@ test "later let binding sees earlier ones" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(let a 1 b (+ :a) :b)" — cursor in b's value, should see a (not b).
+    // "(let a 1 b (+ :a) :b)": cursor in b's value, should see a (not b).
     const source = "(let a 1 b (+ :a) :b)";
     const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":a").? + 1);
     const names = try namesAt(source, cursor, a);
@@ -220,7 +220,7 @@ test "map binds name in its body" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(map x [1 2] (* :x 2))" — cursor on ":x" inside the body.
+    // "(map x [1 2] (* :x 2))": cursor on ":x" inside the body.
     const source = "(map x [1 2] (* :x 2))";
     const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":x").? + 1);
     const names = try namesAt(source, cursor, a);
@@ -232,7 +232,7 @@ test "reduce binds both accumulator and item" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "(reduce acc 0 it [1 2] (+ :acc :it))" — both in scope in the body.
+    // "(reduce acc 0 it [1 2] (+ :acc :it))": both in scope in the body.
     const source = "(reduce acc 0 it [1 2] (+ :acc :it))";
     const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":acc").? + 1);
     const names = try namesAt(source, cursor, a);
@@ -259,7 +259,7 @@ test "binding is not in scope in the source argument" {
     const a = arena.allocator();
 
     // In "(map x :here (* 2))" the cursor in arg1 (the list/source) is index 1 >
-    // 0, so x is offered — accepted minor over-offer. But on the name itself
+    // 0, so x is offered, an accepted minor over-offer. But on the name itself
     // (arg0) nothing is in scope.
     const source = "(map x [1] (* 2))";
     const cursor: u32 = @intCast(std.mem.indexOf(u8, source, "x").?); // on the binding name
