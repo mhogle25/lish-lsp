@@ -75,7 +75,7 @@ fn typeForRole(role: Role, source: []const u8, span: ast_walk.RoleSpan, registry
         .identifier => TYPE_VARIABLE,
         .scope_ref, .parameter => TYPE_PARAMETER,
         .sigil => TYPE_OPERATOR,
-        .definition => TYPE_FUNCTION,
+        .definition => TYPE_MACRO,
         .operator => operatorType(source[span.start..span.end], registry, index),
     };
 }
@@ -324,8 +324,9 @@ test "macro module: head definition and parameter, registry-aware body" {
 
     // "| double x | * :x 2"
     const tokens = try encodeMacroStd("| double x | * :x 2", a);
-    // definition "double" at char 2, length 6: function (6).
-    try testing.expectEqualSlices(u32, &.{ 0, 2, 6, TYPE_FUNCTION, 0 }, tokens[0..5]);
+    // definition "double" at char 2, length 6: macro (7) -- a macro is the macro
+    // color where it's defined too, matching its callsites.
+    try testing.expectEqualSlices(u32, &.{ 0, 2, 6, TYPE_MACRO, 0 }, tokens[0..5]);
     // parameter "x" at char 9 (delta 7), length 1: parameter (4).
     try testing.expectEqualSlices(u32, &.{ 0, 7, 1, TYPE_PARAMETER, 0 }, tokens[5..10]);
     // body "*" is a builtin: function (6). Token 2's type slot is index 13.
