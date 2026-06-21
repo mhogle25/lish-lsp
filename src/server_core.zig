@@ -39,25 +39,60 @@ pub const PROJECT_VOCABULARY_FILE = "lish.ops.json";
 // --- JSON-RPC responses ---
 
 pub fn sendResult(writer: *std.Io.Writer, id: std.json.Value, result_json: []const u8) !void {
-    var buf: [4096]u8 = undefined;
-    var bw = std.Io.Writer.fixed(&buf);
-    try bw.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-    try writeIdValue(&bw, id);
-    try bw.writeAll(",\"result\":");
-    try bw.writeAll(result_json);
-    try bw.writeAll("}");
-    try protocol.writeMessage(writer, bw.buffered());
+    // Stream the framed response: the result body can be arbitrarily large
+    // (semantic tokens for a big file), so it must never have to fit in a
+    // fixed buffer. Only the tiny request id needs a scratch to measure its
+    // length for the Content-Length header.
+    var id_buf: [256]u8 = undefined;
+    var id_w = std.Io.Writer.fixed(&id_buf);
+    try writeIdValue(&id_w, id);
+    const id_str = id_w.buffered();
+
+    const head = "{\"jsonrpc\":\"2.0\",\"id\":";
+    const mid = ",\"result\":";
+    const len = head.len + id_str.len + mid.len + result_json.len + "}".len;
+
+    try writer.print("Content-Length: {d}\r\n\r\n", .{len});
+    try writer.writeAll(head);
+    try writer.writeAll(id_str);
+    try writer.writeAll(mid);
+    try writer.writeAll(result_json);
+    try writer.writeAll("}");
+    try writer.flush();
 }
 
 pub fn sendError(writer: *std.Io.Writer, id: std.json.Value, code: ErrorCode, message: []const u8) !void {
-    var buf: [1024]u8 = undefined;
-    var bw = std.Io.Writer.fixed(&buf);
-    try bw.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-    try writeIdValue(&bw, id);
-    try bw.print(",\"error\":{{\"code\":{d},\"message\":\"", .{@intFromEnum(code)});
-    try writeJsonString(&bw, message);
-    try bw.writeAll("\"}}");
-    try protocol.writeMessage(writer, bw.buffered());
+    var id_buf: [256]u8 = undefined;
+    var id_w = std.Io.Writer.fixed(&id_buf);
+    try writeIdValue(&id_w, id);
+    const id_str = id_w.buffered();
+
+    var code_buf: [16]u8 = undefined;
+    var code_w = std.Io.Writer.fixed(&code_buf);
+    try code_w.print("{d}", .{@intFromEnum(code)});
+    const code_str = code_w.buffered();
+
+    // Measure the JSON-escaped message without bounding it by a fixed buffer.
+    var discard_buf: [64]u8 = undefined;
+    var counter = std.Io.Writer.Discarding.init(&discard_buf);
+    try writeJsonString(&counter.writer, message);
+    const escaped_len: usize = @intCast(counter.fullCount());
+
+    const head = "{\"jsonrpc\":\"2.0\",\"id\":";
+    const mid1 = ",\"error\":{\"code\":";
+    const mid2 = ",\"message\":\"";
+    const tail = "\"}}";
+    const len = head.len + id_str.len + mid1.len + code_str.len + mid2.len + escaped_len + tail.len;
+
+    try writer.print("Content-Length: {d}\r\n\r\n", .{len});
+    try writer.writeAll(head);
+    try writer.writeAll(id_str);
+    try writer.writeAll(mid1);
+    try writer.writeAll(code_str);
+    try writer.writeAll(mid2);
+    try writeJsonString(writer, message);
+    try writer.writeAll(tail);
+    try writer.flush();
 }
 
 fn writeIdValue(w: *std.Io.Writer, id: std.json.Value) !void {
