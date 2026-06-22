@@ -44,7 +44,8 @@ pub const Symbol = struct {
     kind: enum { operation, macro },
     name: []const u8,
     signature: []const u8,
-    /// One-line summary. Empty for macros, which carry no description.
+    /// One-line summary: an op's metadata description, or a macro's cleaned `##`
+    /// docstring. Empty when none.
     description: []const u8,
     category: ?[]const u8,
 };
@@ -300,7 +301,7 @@ pub const LishRegistry = struct {
                 .kind = .macro,
                 .name = name,
                 .signature = signature.written(),
-                .description = "",
+                .description = macro.description,
                 .category = null,
             };
         }
