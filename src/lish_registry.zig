@@ -66,6 +66,8 @@ fn classifyOp(op: Operation) OperatorClass {
 /// `ignore_unknown_fields`): it is re-rendered from the structured `params`.
 const VocabParam = struct {
     name: []const u8,
+    /// Structured `LishType` JSON, converted by `jsonToLishType`.
+    type: std.json.Value = .null,
     role: []const u8 = "value",
     arity: []const u8 = "single",
 };
@@ -74,7 +76,7 @@ const VocabOp = struct {
     name: []const u8,
     category: ?[]const u8 = null,
     description: []const u8 = "",
-    returns: []const u8 = "value",
+    returns: std.json.Value = .null,
     binding_pairs: bool = false,
     params: []const VocabParam = &.{},
 };
@@ -96,6 +98,39 @@ fn parseArity(text: []const u8) lish.Param.Arity {
     if (std.mem.eql(u8, text, "optional")) return .optional;
     if (std.mem.eql(u8, text, "variadic")) return .variadic;
     return .single;
+}
+
+/// Rebuild a `LishType` from the dump's structured JSON (the inverse of
+/// `introspect.writeType`), allocating `one_of`/`literal` payloads in `arena`.
+/// Unrecognized JSON falls back to `.any`.
+fn jsonToLishType(arena: Allocator, value: std.json.Value) Allocator.Error!lish.LishType {
+    switch (value) {
+        .string => |tag| return atomLishType(tag),
+        .object => |obj| {
+            if (obj.get("literal")) |lit| {
+                return .{ .literal = try arena.dupe(u8, if (lit == .string) lit.string else "") };
+            }
+            if (obj.get("one_of")) |members| if (members == .array) {
+                const out = try arena.alloc(lish.LishType, members.array.items.len);
+                for (members.array.items, 0..) |member, i| out[i] = try jsonToLishType(arena, member);
+                return .{ .one_of = out };
+            };
+            return .any;
+        },
+        else => return .any,
+    }
+}
+
+fn atomLishType(tag: []const u8) lish.LishType {
+    if (std.mem.eql(u8, tag, "string")) return .string;
+    if (std.mem.eql(u8, tag, "int")) return .int;
+    if (std.mem.eql(u8, tag, "float")) return .float;
+    if (std.mem.eql(u8, tag, "list")) return .list;
+    if (std.mem.eql(u8, tag, "number")) return .number;
+    if (std.mem.eql(u8, tag, "collection")) return .collection;
+    if (std.mem.eql(u8, tag, "some")) return .some;
+    if (std.mem.eql(u8, tag, "none")) return .none;
+    return .any;
 }
 
 pub const LishRegistry = struct {
@@ -168,6 +203,7 @@ pub const LishRegistry = struct {
             const params = try arena.alloc(lish.Param, source_op.params.len);
             for (source_op.params, 0..) |source_param, i| params[i] = .{
                 .name = try arena.dupe(u8, source_param.name),
+                .type = try jsonToLishType(arena, source_param.type),
                 .role = parseRole(source_param.role),
                 .arity = parseArity(source_param.arity),
             };
@@ -175,7 +211,7 @@ pub const LishRegistry = struct {
             var op = lish.Operation.fromFn(vocabularyNoop, .{
                 .signature = .{
                     .params = params,
-                    .returns = try arena.dupe(u8, source_op.returns),
+                    .returns = try jsonToLishType(arena, source_op.returns),
                     .binding_pairs = source_op.binding_pairs,
                 },
                 .description = try arena.dupe(u8, source_op.description),
@@ -368,7 +404,7 @@ test "loadVocabulary merges host ops with structured param roles" {
     const json =
         \\[
         \\  { "name": "each", "category": "host", "description": "Iterate.",
-        \\    "signature": "each item list body -> $none", "returns": "$none",
+        \\    "signature": "each item list body -> $none", "returns": "none",
         \\    "params": [
         \\      { "name": "item", "role": "binding", "arity": "single" },
         \\      { "name": "list", "role": "value", "arity": "single" },
@@ -392,6 +428,35 @@ test "loadVocabulary merges host ops with structured param roles" {
     try std.testing.expectEqual(lish.Param.Role.binding, op.signature.params[0].role);
     try std.testing.expectEqual(lish.Param.Role.value, op.signature.params[1].role);
     try std.testing.expectEqual(lish.Param.Role.body, op.signature.params[2].role);
+}
+
+test "loadVocabulary round-trips param and return types" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var lr = try LishRegistry.init(a);
+    defer lr.deinit();
+
+    const json =
+        \\[
+        \\  { "name": "clampish", "category": "host", "description": "Clamp.",
+        \\    "signature": "x", "returns": { "one_of": [ "number", "none" ] },
+        \\    "params": [
+        \\      { "name": "lo", "type": "number", "role": "value", "arity": "single" },
+        \\      { "name": "x", "type": "any", "role": "value", "arity": "single" }
+        \\    ] }
+        \\]
+    ;
+    try std.testing.expectEqual(@as(usize, 1), try lr.loadVocabulary(json));
+
+    // Structured types survive the dump -> parse -> render round-trip.
+    const sym = (try lr.lookup("clampish")) orelse return error.MissingSymbol;
+    try std.testing.expectEqualStrings("clampish lo:number x -> number|$none", sym.signature);
+
+    const op = lr.registry.getOperation("clampish").?;
+    try std.testing.expectEqual(lish.LishType.number, op.signature.params[0].type);
+    try std.testing.expectEqual(lish.LishType.any, op.signature.params[1].type);
 }
 
 test "loadVocabulary does not shadow a builtin" {

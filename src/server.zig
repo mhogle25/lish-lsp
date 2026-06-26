@@ -896,7 +896,7 @@ test "host vocabulary from initializationOptions is merged into the registry" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "vocab.json", .data =
         \\[ { "name": "eachthing", "category": "host", "description": "Host iter.",
-        \\    "returns": "$none",
+        \\    "returns": "none",
         \\    "params": [ { "name": "x", "role": "binding", "arity": "single" },
         \\                { "name": "xs", "role": "value", "arity": "single" },
         \\                { "name": "body", "role": "body", "arity": "single" } ] } ]
@@ -948,7 +948,7 @@ test "per-project lish.ops.json is auto-discovered from the workspace root" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "lish.ops.json", .data =
         \\[ { "name": "projop", "category": "host", "description": "A project op.",
-        \\    "returns": "$none", "params": [] } ]
+        \\    "returns": "none", "params": [] } ]
     });
     const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
 
