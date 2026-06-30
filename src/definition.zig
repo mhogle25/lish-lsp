@@ -155,14 +155,14 @@ test "defineExpression jumps a macro call to its workspace definition" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var index = try indexWith(a, "file:///lib.lishmacro", "| double x | * :x 2");
+    var index = try indexWith(a, "file:///lib.lishmacro", "double x | * :x 2 ;");
     defer index.deinit();
 
     // "(double 5)": cursor on "double" at byte 1.
     const loc = (try defineExpression("(double 5)", 1, &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///lib.lishmacro", loc.uri);
-    try testing.expectEqual(@as(u32, 2), loc.start); // "double" header id
-    try testing.expectEqual(@as(u32, 8), loc.end);
+    try testing.expectEqual(@as(u32, 0), loc.start); // "double" header id
+    try testing.expectEqual(@as(u32, 6), loc.end);
 }
 
 test "defineExpression resolves a macro used as an argument" {
@@ -170,7 +170,7 @@ test "defineExpression resolves a macro used as an argument" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var index = try indexWith(a, "file:///lib.lishmacro", "| helper | 1");
+    var index = try indexWith(a, "file:///lib.lishmacro", "helper | 1 ;");
     defer index.deinit();
 
     // "(f helper)": "helper" as a bare-identifier argument at byte 3.
@@ -209,13 +209,13 @@ test "defineMacro jumps a scope ref to its head parameter" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // "| double x | * :x 2": param "x" at byte 9; ":x" body ref names it.
-    const source = "| double x | * :x 2";
+    // "double x | * :x 2 ;": param "x" at byte 7; ":x" body ref names it.
+    const source = "double x | * :x 2 ;";
     const ref_byte: u32 = @intCast(std.mem.indexOf(u8, source, ":x").? + 1); // on the "x"
     const loc = (try defineMacro(source, ref_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///m.lishmacro", loc.uri);
-    try testing.expectEqual(@as(u32, 9), loc.start); // the head "x"
-    try testing.expectEqual(@as(u32, 10), loc.end);
+    try testing.expectEqual(@as(u32, 7), loc.start); // the head "x"
+    try testing.expectEqual(@as(u32, 8), loc.end);
 }
 
 test "defineMacro resolves a body call to a sibling macro in the same module" {
@@ -226,12 +226,12 @@ test "defineMacro resolves a body call to a sibling macro in the same module" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // "| a x | :x | b y | a :y": "a" called inside b's body resolves to a's head.
-    const source = "| a x | :x | b y | a :y";
+    // "a x | :x ; b y | a :y ;": "a" called inside b's body resolves to a's head.
+    const source = "a x | :x ; b y | a :y ;";
     const call_byte: u32 = @intCast(std.mem.lastIndexOfScalar(u8, source, 'a').?); // the call in b's body
     const loc = (try defineMacro(source, call_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///m.lishmacro", loc.uri);
-    try testing.expectEqual(@as(u32, 2), loc.start); // a's head id at byte 2
+    try testing.expectEqual(@as(u32, 0), loc.start); // a's head id at byte 0
 }
 
 test "defineMacro falls back to the workspace index for a cross-file macro" {
@@ -239,11 +239,11 @@ test "defineMacro falls back to the workspace index for a cross-file macro" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var index = try indexWith(a, "file:///other.lishmacro", "| shared | 1");
+    var index = try indexWith(a, "file:///other.lishmacro", "shared | 1 ;");
     defer index.deinit();
 
-    // "| wrap | shared": "shared" is defined in another file.
-    const source = "| wrap | shared";
+    // "wrap | shared ;": "shared" is defined in another file.
+    const source = "wrap | shared ;";
     const call_byte: u32 = @intCast(std.mem.indexOf(u8, source, "shared").?);
     const loc = (try defineMacro(source, call_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///other.lishmacro", loc.uri);
@@ -257,8 +257,8 @@ test "defineMacro returns null on the head name itself" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // Cursor on "double" (byte 2): already at the definition.
-    try testing.expect((try defineMacro("| double x | :x", 2, "file:///m.lishmacro", &index, a)) == null);
+    // Cursor on "double" (byte 0): already at the definition.
+    try testing.expect((try defineMacro("double x | :x ;", 0, "file:///m.lishmacro", &index, a)) == null);
 }
 
 test "defineMacro returns null on a head parameter itself" {
@@ -269,8 +269,8 @@ test "defineMacro returns null on a head parameter itself" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // Cursor on the head "x" (byte 9): already at the definition.
-    try testing.expect((try defineMacro("| double x | :x", 9, "file:///m.lishmacro", &index, a)) == null);
+    // Cursor on the head "x" (byte 7): already at the definition.
+    try testing.expect((try defineMacro("double x | :x ;", 7, "file:///m.lishmacro", &index, a)) == null);
 }
 
 test "defineMacro returns null for a builtin called in a body" {
@@ -282,7 +282,7 @@ test "defineMacro returns null for a builtin called in a body" {
     defer index.deinit();
 
     // "*" is a builtin; nothing to jump to.
-    const source = "| double x | * :x 2";
+    const source = "double x | * :x 2 ;";
     const star_byte: u32 = @intCast(std.mem.indexOfScalar(u8, source, '*').?);
     try testing.expect((try defineMacro(source, star_byte, "file:///m.lishmacro", &index, a)) == null);
 }
@@ -296,7 +296,7 @@ test "defineMacro returns null for a scope ref with no matching parameter" {
     defer index.deinit();
 
     // ":outer" names no head parameter (it would be an outer binding at runtime).
-    const source = "| double x | :outer";
+    const source = "double x | :outer ;";
     const ref_byte: u32 = @intCast(std.mem.indexOf(u8, source, "outer").?);
     try testing.expect((try defineMacro(source, ref_byte, "file:///m.lishmacro", &index, a)) == null);
 }

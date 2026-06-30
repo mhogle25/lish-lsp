@@ -240,13 +240,13 @@ test "indexSource records a macro's header position and signature" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    // "| double x | * :x 2": "double" header id at bytes [2,8).
-    try index.indexSource(a, "file:///lib.lishmacro", "| double x | * :x 2");
+    // "double x | * :x 2 ;": "double" header id at bytes [0,6).
+    try index.indexSource(a, "file:///lib.lishmacro", "double x | * :x 2 ;");
 
     const def = index.lookup("double") orelse return error.NotFound;
     try testing.expectEqualStrings("file:///lib.lishmacro", def.uri);
-    try testing.expectEqual(@as(u32, 2), def.start);
-    try testing.expectEqual(@as(u32, 8), def.end);
+    try testing.expectEqual(@as(u32, 0), def.start);
+    try testing.expectEqual(@as(u32, 6), def.end);
     try testing.expectEqualStrings("double x", def.signature);
 }
 
@@ -258,7 +258,7 @@ test "indexSource renders deferred params with a ~" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    try index.indexSource(a, "file:///m.lishmacro", "| run ~body | if :body 1");
+    try index.indexSource(a, "file:///m.lishmacro", "run ~body | if :body 1 ;");
     const def = index.lookup("run") orelse return error.NotFound;
     try testing.expectEqualStrings("run ~body", def.signature);
 }
@@ -271,8 +271,8 @@ test "indexSource is first-wins on a duplicate name" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    try index.indexSource(a, "file:///first.lishmacro", "| dup x | :x");
-    try index.indexSource(a, "file:///second.lishmacro", "| dup y | :y");
+    try index.indexSource(a, "file:///first.lishmacro", "dup x | :x ;");
+    try index.indexSource(a, "file:///second.lishmacro", "dup y | :y ;");
 
     const def = index.lookup("dup") orelse return error.NotFound;
     try testing.expectEqualStrings("file:///first.lishmacro", def.uri);
@@ -292,7 +292,7 @@ test "clear empties the index" {
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
 
-    try index.indexSource(a, "file:///m.lishmacro", "| foo | 1");
+    try index.indexSource(a, "file:///m.lishmacro", "foo | 1 ;");
     try testing.expect(index.lookup("foo") != null);
     index.clear();
     try testing.expect(index.lookup("foo") == null);
@@ -305,7 +305,7 @@ test "indexOpenDocs indexes only .lishmacro documents from the store" {
 
     var store = DocumentStore.init(testing.allocator);
     defer store.deinit();
-    try store.open("file:///a.lishmacro", "| indoc x | :x", 1);
+    try store.open("file:///a.lishmacro", "indoc x | :x ;", 1);
     try store.open("file:///b.lish", "(+ 1 2)", 1);
 
     var index = WorkspaceIndex.init(testing.allocator);
@@ -326,7 +326,7 @@ test "build scans .lishmacro files on disk" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "lib.lishmacro", .data = "| double x | * :x 2" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "lib.lishmacro", .data = "double x | * :x 2 ;" });
 
     const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
 
@@ -353,7 +353,7 @@ test "build prefers an open document over its on-disk copy" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "lib.lishmacro", .data = "| onlyondisk | 1" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "lib.lishmacro", .data = "onlyondisk | 1 ;" });
 
     const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     const file_uri = try uri.fromPath(a, try std.fs.path.join(a, &.{ root, "lib.lishmacro" }));
@@ -361,7 +361,7 @@ test "build prefers an open document over its on-disk copy" {
     var store = DocumentStore.init(testing.allocator);
     defer store.deinit();
     // The open buffer defines a different macro than the saved file.
-    try store.open(file_uri, "| onlyopen | 2", 2);
+    try store.open(file_uri, "onlyopen | 2 ;", 2);
 
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();

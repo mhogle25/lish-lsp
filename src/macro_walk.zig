@@ -1,10 +1,10 @@
 //! Role-tagged spans for a `.lishmacro` module.
 //!
-//! A macro module is a sequence of `| name params | body` definitions. The
+//! A macro module is a sequence of `name params | body ;` definitions. The
 //! head contributes a definition (the macro name), its parameters, and the `~`
 //! sigil on deferred ones; the body is an ordinary lish expression, so it reuses
-//! the expression walker. The `|` bars are omitted, like brackets in expression
-//! mode: clients theme delimiters themselves.
+//! the expression walker. The `|` separator and `;` terminator are omitted, like
+//! brackets in expression mode: clients theme delimiters themselves.
 
 const std = @import("std");
 const lish = @import("lish");
@@ -83,12 +83,12 @@ test "macro head: definition, value param, body" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "| double x | * :x 2"
-    const spans = try collectSource("| double x | * :x 2", a);
+    // "double x | * :x 2 ;"
+    const spans = try collectSource("double x | * :x 2 ;", a);
     // definition "double", parameter "x", operator "*", sigil ":", scope_ref "x", number "2"
     try testing.expectEqual(@as(usize, 6), spans.len);
     try testing.expectEqual(Role.definition, spans[0].role);
-    try testing.expectEqual(@as(u32, 2), spans[0].start); // after "| "
+    try testing.expectEqual(@as(u32, 0), spans[0].start); // header starts at the name
     try testing.expectEqual(Role.parameter, spans[1].role);
     try testing.expectEqual(Role.operator, spans[2].role);
     try testing.expectEqual(Role.sigil, spans[3].role);
@@ -101,8 +101,8 @@ test "deferred parameter gets a ~ sigil" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "| run ~body | if :body 1"
-    const spans = try collectSource("| run ~body | if :body 1", a);
+    // "run ~body | if :body 1 ;"
+    const spans = try collectSource("run ~body | if :body 1 ;", a);
     try testing.expectEqual(Role.definition, spans[0].role); // run
     // The "~" sigil immediately precedes "body".
     try testing.expectEqual(Role.sigil, spans[1].role);
@@ -115,7 +115,7 @@ test "multiple macros each contribute a definition" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const spans = try collectSource("| a x | + :x 1 | b y | + :y 2", a);
+    const spans = try collectSource("a x | + :x 1 ; b y | + :y 2 ;", a);
     var definitions: usize = 0;
     for (spans) |s| {
         if (s.role == .definition) definitions += 1;

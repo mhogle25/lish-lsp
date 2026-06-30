@@ -299,8 +299,10 @@ test "scope completion offers macro head params in a body" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "| double x | (* :x": completing ":x" in the body offers the head param.
-    const source = "| double x | (* :x";
+    // "double x | (* :x": completing ":x" in the body offers the head param.
+    // The body is EOF-terminated (a trailing `;` is optional), so source.len
+    // sits right after ":x".
+    const source = "double x | (* :x";
     const cursor: u32 = @intCast(source.len);
     const result = (try collect(source, cursor, &registry, null, .macro, a)) orelse return error.NoResult;
     try testing.expect(contains(result, "x"));
@@ -353,7 +355,7 @@ test "includes a workspace macro and dedupes against the vocabulary" {
 
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
-    try index.indexSource(a, "file:///lib.lishmacro", "| myhelper x | :x");
+    try index.indexSource(a, "file:///lib.lishmacro", "myhelper x | :x ;");
 
     const result = (try collect("(my", 3, &registry, &index, .expression, a)) orelse return error.NoCompletion;
     try testing.expect(contains(result, "myhelper"));

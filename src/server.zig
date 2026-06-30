@@ -987,7 +987,7 @@ test "definition jumps a macro call to its cross-file definition" {
 
     // A macro library and an expression document that calls into it, both open.
     try server.handle(
-        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lib.lishmacro","languageId":"lish","version":1,"text":"| double x | * :x 2"}}}
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lib.lishmacro","languageId":"lish","version":1,"text":"double x | * :x 2 ;"}}}
     , arena.allocator());
     try server.handle(
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///main.lish","languageId":"lish","version":1,"text":"(double 5)"}}}
@@ -1003,9 +1003,9 @@ test "definition jumps a macro call to its cross-file definition" {
     const out = out_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":9") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "file:///lib.lishmacro") != null);
-    // "double" header id spans bytes [2,8) on line 0.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":2}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":8}") != null);
+    // "double" header id spans bytes [0,6) on line 0.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":0}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":6}") != null);
 }
 
 test "definition jumps a scope ref to its head parameter in the same document" {
@@ -1021,21 +1021,21 @@ test "definition jumps a scope ref to its head parameter in the same document" {
     defer arena.deinit();
 
     try server.handle(
-        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///m.lishmacro","languageId":"lish","version":1,"text":"| double x | * :x 2"}}}
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///m.lishmacro","languageId":"lish","version":1,"text":"double x | * :x 2 ;"}}}
     , arena.allocator());
 
     out_writer = std.Io.Writer.fixed(&out_buf);
 
-    // Cursor on the "x" of ":x" (line 0, char 16).
+    // Cursor on the "x" of ":x" (line 0, char 14).
     try server.handle(
-        \\{"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///m.lishmacro"},"position":{"line":0,"character":16}}}
+        \\{"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///m.lishmacro"},"position":{"line":0,"character":14}}}
     , arena.allocator());
 
     const out = out_writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "file:///m.lishmacro") != null);
-    // The head parameter "x" spans bytes [9,10) on line 0.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":9}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":10}") != null);
+    // The head parameter "x" spans bytes [7,8) on line 0.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":7}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":8}") != null);
 }
 
 test "definition on a builtin returns null" {
@@ -1299,7 +1299,7 @@ test "hover falls back to the workspace index for a user macro" {
     defer arena.deinit();
 
     try server.handle(
-        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///combat.lishmacro","languageId":"lish","version":1,"text":"| strike target | :target"}}}
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///combat.lishmacro","languageId":"lish","version":1,"text":"strike target | :target ;"}}}
     , arena.allocator());
     try server.handle(
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///main.lish","languageId":"lish","version":1,"text":"(strike foe)"}}}

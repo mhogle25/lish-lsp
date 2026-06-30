@@ -253,7 +253,7 @@ test "operator unknown to the registry but in the index reads as a macro" {
 
     var index = WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
-    try index.indexSource(a, "file:///lib.lishmacro", "| myMacro x | :x");
+    try index.indexSource(a, "file:///lib.lishmacro", "myMacro x | :x ;");
 
     const table = try LineTable.build("(myMacro 1)", a);
     const tokens = try encode("(myMacro 1)", table, &registry, &index, .expression, a);
@@ -322,12 +322,12 @@ test "macro module: head definition and parameter, registry-aware body" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    // "| double x | * :x 2"
-    const tokens = try encodeMacroStd("| double x | * :x 2", a);
-    // definition "double" at char 2, length 6: macro (7) -- a macro is the macro
+    // "double x | * :x 2 ;"
+    const tokens = try encodeMacroStd("double x | * :x 2 ;", a);
+    // definition "double" at char 0, length 6: macro (7) -- a macro is the macro
     // color where it's defined too, matching its callsites.
-    try testing.expectEqualSlices(u32, &.{ 0, 2, 6, TYPE_MACRO, 0 }, tokens[0..5]);
-    // parameter "x" at char 9 (delta 7), length 1: parameter (4).
+    try testing.expectEqualSlices(u32, &.{ 0, 0, 6, TYPE_MACRO, 0 }, tokens[0..5]);
+    // parameter "x" at char 7 (delta 7), length 1: parameter (4).
     try testing.expectEqualSlices(u32, &.{ 0, 7, 1, TYPE_PARAMETER, 0 }, tokens[5..10]);
     // body "*" is a builtin: function (6). Token 2's type slot is index 13.
     try testing.expectEqual(@as(u32, TYPE_FUNCTION), tokens[13]);
@@ -338,7 +338,7 @@ test "macro module folds in a leading docstring comment" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const tokens = try encodeMacroStd("## doc\n| id x | :x", a);
+    const tokens = try encodeMacroStd("## doc\nid x | :x ;", a);
     // First token is the comment on line 0.
     try testing.expectEqualSlices(u32, &.{ 0, 0, 6, TYPE_COMMENT, 0 }, tokens[0..5]);
 }

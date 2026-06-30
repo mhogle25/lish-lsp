@@ -289,7 +289,7 @@ test "hover falls back to the workspace index for a user macro" {
 
     var index = workspace_index.WorkspaceIndex.init(testing.allocator);
     defer index.deinit();
-    try index.indexSource(a, "file:///home/combat.lishmacro", "## Strikes a target.\n| strike target dmg | :target");
+    try index.indexSource(a, "file:///home/combat.lishmacro", "## Strikes a target.\nstrike target dmg | :target ;");
 
     // "strike" is unknown to the registry but defined in the workspace.
     const hover = (try hoverAt("(strike a b)", 1, &registry, &index, a)) orelse return error.NoHover;
@@ -311,9 +311,9 @@ test "macro hover on the head name shows its derived signature" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "## doubles x\n| double x | * :x 2": cursor on "double" (byte 15).
-    const source = "## doubles x\n| double x | * :x 2";
-    const hover = (try hoverAtMacro(source, 15, &registry, null, a)) orelse return error.NoHover;
+    // "## doubles x\ndouble x | * :x 2 ;": cursor on "double" (byte 13).
+    const source = "## doubles x\ndouble x | * :x 2 ;";
+    const hover = (try hoverAtMacro(source, 13, &registry, null, a)) orelse return error.NoHover;
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "double x") != null);
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "_macro_") != null);
     // Docstring markers are stripped.
@@ -329,8 +329,8 @@ test "macro hover inside the body resolves a builtin" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // "| double x | * :x 2": "*" sits at byte 13.
-    const hover = (try hoverAtMacro("| double x | * :x 2", 13, &registry, null, a)) orelse return error.NoHover;
+    // "double x | * :x 2 ;": "*" sits at byte 11.
+    const hover = (try hoverAtMacro("double x | * :x 2 ;", 11, &registry, null, a)) orelse return error.NoHover;
     try testing.expect(std.mem.indexOf(u8, hover.markdown, "_operation") != null);
 }
 
@@ -342,6 +342,6 @@ test "macro hover on a parameter yields nothing" {
     var registry = try LishRegistry.init(a);
     defer registry.deinit();
 
-    // Cursor on the head parameter "x" at byte 9: not a registry name.
-    try testing.expect((try hoverAtMacro("| double x | * :x 2", 9, &registry, null, a)) == null);
+    // Cursor on the head parameter "x" at byte 7: not a registry name.
+    try testing.expect((try hoverAtMacro("double x | * :x 2 ;", 7, &registry, null, a)) == null);
 }

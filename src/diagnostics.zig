@@ -175,7 +175,7 @@ test "collectMacro finds a malformed-head error" {
     const a = arena.allocator();
 
     // A bare `~` with no parameter name is a head error.
-    const module = try lish.macro_parser.parseMacroModule(a, "| foo ~ | :foo");
+    const module = try lish.macro_parser.parseMacroModule(a, "foo ~ | :foo ;");
     var diags: std.ArrayList(Diagnostic) = .empty;
     try collectMacro(module, &diags, a);
     try std.testing.expect(diags.items.len >= 1);
@@ -187,7 +187,7 @@ test "collectMacro finds a body error" {
     const a = arena.allocator();
 
     // Unbalanced bracket inside the body.
-    const module = try lish.macro_parser.parseMacroModule(a, "| foo x | (+ :x 1");
+    const module = try lish.macro_parser.parseMacroModule(a, "foo x | (+ :x 1 ;");
     var diags: std.ArrayList(Diagnostic) = .empty;
     try collectMacro(module, &diags, a);
     try std.testing.expect(diags.items.len >= 1);
@@ -198,7 +198,7 @@ test "collectMacro finds nothing for a valid module" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const module = try lish.macro_parser.parseMacroModule(a, "| double x | * :x 2");
+    const module = try lish.macro_parser.parseMacroModule(a, "double x | * :x 2 ;");
     var diags: std.ArrayList(Diagnostic) = .empty;
     try collectMacro(module, &diags, a);
     try std.testing.expectEqual(@as(usize, 0), diags.items.len);
