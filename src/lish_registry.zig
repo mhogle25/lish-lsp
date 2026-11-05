@@ -282,7 +282,7 @@ pub const LishRegistry = struct {
     pub fn collectMatching(
         self: *LishRegistry,
         prefix: []const u8,
-        out: *std.ArrayListUnmanaged(Candidate),
+        out: *std.ArrayList(Candidate),
         allocator: Allocator,
     ) Allocator.Error!void {
         var op_it = self.registry.operations.iterator();
@@ -380,7 +380,7 @@ test "collectMatching returns prefix-matching ops and macros" {
     var lr = try LishRegistry.init(a);
     defer lr.deinit();
 
-    var out: std.ArrayListUnmanaged(LishRegistry.Candidate) = .empty;
+    var out: std.ArrayList(LishRegistry.Candidate) = .empty;
     try lr.collectMatching("cl", &out, a);
 
     // "clamp" / "clamp01" are stdlib macros; everything returned starts with "cl".
@@ -494,7 +494,7 @@ test "collectMatching classifies a keyword-category op" {
     var lr = try LishRegistry.init(a);
     defer lr.deinit();
 
-    var out: std.ArrayListUnmanaged(LishRegistry.Candidate) = .empty;
+    var out: std.ArrayList(LishRegistry.Candidate) = .empty;
     try lr.collectMatching("if", &out, a);
 
     var found_if = false;

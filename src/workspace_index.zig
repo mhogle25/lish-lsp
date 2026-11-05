@@ -180,7 +180,7 @@ pub const WorkspaceIndex = struct {
                     if (!std.mem.endsWith(u8, entry.basename, lish.MACRO_EXTENSION)) continue;
 
                     const scratch = file_arena.allocator();
-                    const full_path = std.fs.path.join(scratch, &.{ root, entry.path }) catch continue;
+                    const full_path = std.Io.Dir.path.join(scratch, &.{ root, entry.path }) catch continue;
                     const file_uri = uri.fromPath(scratch, full_path) catch continue;
                     if (open_uris.contains(file_uri)) continue;
                     const source = entry.dir.readFileAlloc(io, entry.basename, scratch, .limited(lish.MACRO_FILE_MAX_SIZE)) catch continue;
@@ -328,7 +328,7 @@ test "build scans .lishmacro files on disk" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "lib.lishmacro", .data = "double x | * :x 2 ;" });
 
-    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    const root = try std.Io.Dir.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
 
     var store = DocumentStore.init(testing.allocator);
     defer store.deinit();
@@ -355,8 +355,8 @@ test "build prefers an open document over its on-disk copy" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "lib.lishmacro", .data = "onlyondisk | 1 ;" });
 
-    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
-    const file_uri = try uri.fromPath(a, try std.fs.path.join(a, &.{ root, "lib.lishmacro" }));
+    const root = try std.Io.Dir.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    const file_uri = try uri.fromPath(a, try std.Io.Dir.path.join(a, &.{ root, "lib.lishmacro" }));
 
     var store = DocumentStore.init(testing.allocator);
     defer store.deinit();

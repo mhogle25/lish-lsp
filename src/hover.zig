@@ -140,7 +140,7 @@ fn renderIndexMacro(def: workspace_index.MacroDef, allocator: Allocator) Allocat
 /// The final path segment of a `file://` URI (`.../combat.lishmacro` ->
 /// `combat.lishmacro`).
 fn uriBasename(uri: []const u8) []const u8 {
-    const slash = std.mem.lastIndexOfScalar(u8, uri, '/') orelse return uri;
+    const slash = std.mem.findScalarLast(u8, uri, '/') orelse return uri;
     return uri[slash + 1 ..];
 }
 
@@ -238,8 +238,8 @@ test "hover on a builtin operator shows its signature and description" {
 
     // Cursor on "+" at byte 1 in "(+ 1 2)".
     const hover = (try hoverAt("(+ 1 2)", 1, &registry, null, a)) orelse return error.NoHover;
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "```lish") != null);
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "_operation") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "```lish") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "_operation") != null);
     try testing.expectEqual(@as(u32, 1), hover.start);
     try testing.expectEqual(@as(u32, 2), hover.end);
 }
@@ -293,14 +293,14 @@ test "hover falls back to the workspace index for a user macro" {
 
     // "strike" is unknown to the registry but defined in the workspace.
     const hover = (try hoverAt("(strike a b)", 1, &registry, &index, a)) orelse return error.NoHover;
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "strike target dmg") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "strike target dmg") != null);
     // The cross-file hover carries the docstring too (markers stripped), matching
     // the head-name hover in the macro's own file.
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "Strikes a target.") != null);
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "##") == null);
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "defined in `combat.lishmacro`") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "Strikes a target.") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "##") == null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "defined in `combat.lishmacro`") != null);
     // File-derived category: the basename without the extension.
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "_macro - combat_") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "_macro - combat_") != null);
 }
 
 test "macro hover on the head name shows its derived signature" {
@@ -314,11 +314,11 @@ test "macro hover on the head name shows its derived signature" {
     // "## doubles x\ndouble x | * :x 2 ;": cursor on "double" (byte 13).
     const source = "## doubles x\ndouble x | * :x 2 ;";
     const hover = (try hoverAtMacro(source, 13, &registry, null, a)) orelse return error.NoHover;
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "double x") != null);
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "_macro_") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "double x") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "_macro_") != null);
     // Docstring markers are stripped.
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "doubles x") != null);
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "##") == null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "doubles x") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "##") == null);
 }
 
 test "macro hover inside the body resolves a builtin" {
@@ -331,7 +331,7 @@ test "macro hover inside the body resolves a builtin" {
 
     // "double x | * :x 2 ;": "*" sits at byte 11.
     const hover = (try hoverAtMacro("double x | * :x 2 ;", 11, &registry, null, a)) orelse return error.NoHover;
-    try testing.expect(std.mem.indexOf(u8, hover.markdown, "_operation") != null);
+    try testing.expect(std.mem.find(u8, hover.markdown, "_operation") != null);
 }
 
 test "macro hover on a parameter yields nothing" {

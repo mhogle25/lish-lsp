@@ -66,13 +66,13 @@ pub const Server = struct {
     index_dirty: bool = true,
     /// Workspace root paths from `initialize` (`workspaceFolders`/`rootUri`/
     /// `rootPath`). Each path and the backing list are owned by `allocator`.
-    roots: std.ArrayListUnmanaged([]const u8) = .empty,
+    roots: std.ArrayList([]const u8) = .empty,
     /// Host-vocabulary file specs from `initialize`
     /// (`initializationOptions.vocabulary`): each a path to a `lish --dump-ops`
     /// JSON file, absolute or relative to the first workspace root. Merged into
     /// the standard registry on first use. Each string and the list are owned by
     /// `allocator`.
-    vocabulary_specs: std.ArrayListUnmanaged([]const u8) = .empty,
+    vocabulary_specs: std.ArrayList([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, log: *std.Io.Writer) Server {
         return .{
@@ -546,9 +546,9 @@ test "initialize transitions state and emits capabilities" {
 
     try std.testing.expectEqual(State.initialized, server.state);
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"capabilities\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"textDocumentSync\":1") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":1") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"capabilities\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"textDocumentSync\":1") != null);
 }
 
 test "shutdown then exit sets clean exit" {
@@ -602,8 +602,8 @@ test "request before initialize returns server_not_initialized" {
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\"}", arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"code\":-32002") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":2") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"code\":-32002") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":2") != null);
 }
 
 test "unknown method after initialize returns method_not_found" {
@@ -621,8 +621,8 @@ test "unknown method after initialize returns method_not_found" {
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":\"x9\",\"method\":\"bogus/method\"}", arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"code\":-32601") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"x9\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"code\":-32601") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":\"x9\"") != null);
 }
 
 test "string ids are echoed back" {
@@ -639,7 +639,7 @@ test "string ids are echoed back" {
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"initialize\"}", arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":\"abc\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":\"abc\"") != null);
 }
 
 test "notifications without id produce no response" {
@@ -701,7 +701,7 @@ test "didOpen, didChange, didClose update the store" {
     const out = out_writer.buffered();
     var count: usize = 0;
     var search_at: usize = 0;
-    while (std.mem.indexOfPos(u8, out, search_at, "publishDiagnostics")) |idx| {
+    while (std.mem.findPos(u8, out, search_at, "publishDiagnostics")) |idx| {
         count += 1;
         search_at = idx + 1;
     }
@@ -749,12 +749,12 @@ test "didOpen on broken source emits a diagnostic" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "publishDiagnostics") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "file:///bad.lish") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"source\":\"lish\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "publishDiagnostics") != null);
+    try std.testing.expect(std.mem.find(u8, out, "file:///bad.lish") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"severity\":1") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"source\":\"lish\"") != null);
     // The diagnostics array should be non-empty.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"diagnostics\":[]") == null);
+    try std.testing.expect(std.mem.find(u8, out, "\"diagnostics\":[]") == null);
 }
 
 test "didOpen on valid source emits empty diagnostics" {
@@ -774,8 +774,8 @@ test "didOpen on valid source emits empty diagnostics" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "publishDiagnostics") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"diagnostics\":[]") != null);
+    try std.testing.expect(std.mem.find(u8, out, "publishDiagnostics") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"diagnostics\":[]") != null);
 }
 
 test "semanticTokens/full returns encoded data" {
@@ -799,12 +799,12 @@ test "semanticTokens/full returns encoded data" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"data\":[") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":5") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"data\":[") != null);
     // (+ 1 2) tokenizes to identifier "+" then two numbers: 3 tokens, 15 u32s.
     // We don't pin the exact array here (positions are delta-encoded), but it
     // must be non-empty.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"data\":[]") == null);
+    try std.testing.expect(std.mem.find(u8, out, "\"data\":[]") == null);
 }
 
 test "semanticTokens/full on unknown document returns null" {
@@ -824,8 +824,8 @@ test "semanticTokens/full on unknown document returns null" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":6") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":6") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"result\":null") != null);
 }
 
 test "initialize advertises semanticTokensProvider" {
@@ -842,8 +842,8 @@ test "initialize advertises semanticTokensProvider" {
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"semanticTokensProvider\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"tokenTypes\":[\"comment\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"semanticTokensProvider\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"tokenTypes\":[\"comment\"") != null);
 }
 
 test "initialize advertises definitionProvider" {
@@ -859,7 +859,7 @@ test "initialize advertises definitionProvider" {
 
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"definitionProvider\":true") != null);
+    try std.testing.expect(std.mem.find(u8, out_writer.buffered(), "\"definitionProvider\":true") != null);
 }
 
 test "initialize records a rootUri as a workspace root" {
@@ -905,7 +905,7 @@ test "host vocabulary from initializationOptions is merged into the registry" {
     // Root is the tmp dir (relative to cwd); the vocabulary path is relative to
     // that root, so resolveVocabularyPath joins them and the read works without
     // any absolute-path machinery.
-    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    const root = try std.Io.Dir.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
 
     var out_buf: [4096]u8 = undefined;
     var out_writer = std.Io.Writer.fixed(&out_buf);
@@ -950,7 +950,7 @@ test "per-project lish.ops.json is auto-discovered from the workspace root" {
         \\[ { "name": "projop", "category": "host", "description": "A project op.",
         \\    "returns": "none", "params": [] } ]
     });
-    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    const root = try std.Io.Dir.path.join(a, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
 
     var out_buf: [4096]u8 = undefined;
     var out_writer = std.Io.Writer.fixed(&out_buf);
@@ -1001,11 +1001,11 @@ test "definition jumps a macro call to its cross-file definition" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":9") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "file:///lib.lishmacro") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":9") != null);
+    try std.testing.expect(std.mem.find(u8, out, "file:///lib.lishmacro") != null);
     // "double" header id spans bytes [0,6) on line 0.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":0}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":6}") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"start\":{\"line\":0,\"character\":0}") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"end\":{\"line\":0,\"character\":6}") != null);
 }
 
 test "definition jumps a scope ref to its head parameter in the same document" {
@@ -1032,10 +1032,10 @@ test "definition jumps a scope ref to its head parameter in the same document" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "file:///m.lishmacro") != null);
+    try std.testing.expect(std.mem.find(u8, out, "file:///m.lishmacro") != null);
     // The head parameter "x" spans bytes [7,8) on line 0.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":7}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":8}") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"start\":{\"line\":0,\"character\":7}") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"end\":{\"line\":0,\"character\":8}") != null);
 }
 
 test "definition on a builtin returns null" {
@@ -1061,8 +1061,8 @@ test "definition on a builtin returns null" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":11") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":11") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"result\":null") != null);
 }
 
 test "definition on an unknown document returns null" {
@@ -1082,8 +1082,8 @@ test "definition on an unknown document returns null" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":12") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":12") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"result\":null") != null);
 }
 
 test "initialize advertises completionProvider" {
@@ -1098,7 +1098,7 @@ test "initialize advertises completionProvider" {
     defer arena.deinit();
 
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
-    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"completionProvider\"") != null);
+    try std.testing.expect(std.mem.find(u8, out_writer.buffered(), "\"completionProvider\"") != null);
 }
 
 test "completion returns prefix-matching vocabulary items with an edit range" {
@@ -1125,13 +1125,13 @@ test "completion returns prefix-matching vocabulary items with an edit range" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":15") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"map\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":15") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"label\":\"map\"") != null);
     // The edit replaces from the start of "ma" (char 1) to the cursor (char 3).
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":1}") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"start\":{\"line\":0,\"character\":1}") != null);
     // newText is the snippet (placeholders for the parameters), inserted as a snippet.
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"insertTextFormat\":2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"newText\":\"map ${1:name} ${2:list} ${3:body}\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"insertTextFormat\":2") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"newText\":\"map ${1:name} ${2:list} ${3:body}\"") != null);
 }
 
 test "completion after a colon offers in-scope bindings" {
@@ -1159,9 +1159,9 @@ test "completion after a colon offers in-scope bindings" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":17") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"total\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":6") != null); // Variable
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":17") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"label\":\"total\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"kind\":6") != null); // Variable
 }
 
 test "completion in a config file offers the repl-config ops" {
@@ -1186,7 +1186,7 @@ test "completion in a config file offers the repl-config ops" {
         \\{"jsonrpc":"2.0","id":18,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///home/u/.config/lish/config.lish"},"position":{"line":0,"character":7}}}
     , arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"label\":\"indent-width\"") != null);
+    try std.testing.expect(std.mem.find(u8, out_writer.buffered(), "\"label\":\"indent-width\"") != null);
 }
 
 test "completion in a normal file does not offer repl-config ops" {
@@ -1211,7 +1211,7 @@ test "completion in a normal file does not offer repl-config ops" {
         \\{"jsonrpc":"2.0","id":19,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///proj/script.lish"},"position":{"line":0,"character":7}}}
     , arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "indent-width") == null);
+    try std.testing.expect(std.mem.find(u8, out_writer.buffered(), "indent-width") == null);
 }
 
 test "signatureHelp reports the active parameter" {
@@ -1238,10 +1238,10 @@ test "signatureHelp reports the active parameter" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":21") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"clamp v lo hi\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"activeParameter\":2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"label\":\"hi\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":21") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"label\":\"clamp v lo hi\"") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"activeParameter\":2") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"label\":\"hi\"") != null);
 }
 
 test "initialize advertises signatureHelpProvider" {
@@ -1256,7 +1256,7 @@ test "initialize advertises signatureHelpProvider" {
     defer arena.deinit();
 
     try server.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", arena.allocator());
-    try std.testing.expect(std.mem.indexOf(u8, out_writer.buffered(), "\"signatureHelpProvider\"") != null);
+    try std.testing.expect(std.mem.find(u8, out_writer.buffered(), "\"signatureHelpProvider\"") != null);
 }
 
 test "completion inside a comment returns an empty list" {
@@ -1282,8 +1282,8 @@ test "completion inside a comment returns an empty list" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":16") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":16") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"result\":[]") != null);
 }
 
 test "hover falls back to the workspace index for a user macro" {
@@ -1313,10 +1313,10 @@ test "hover falls back to the workspace index for a user macro" {
     , arena.allocator());
 
     const out = out_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"id\":20") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "strike target") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "defined in") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "combat") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\"id\":20") != null);
+    try std.testing.expect(std.mem.find(u8, out, "strike target") != null);
+    try std.testing.expect(std.mem.find(u8, out, "defined in") != null);
+    try std.testing.expect(std.mem.find(u8, out, "combat") != null);
 }
 
 test "didChange on unknown document logs but does not crash" {
@@ -1336,5 +1336,5 @@ test "didChange on unknown document logs but does not crash" {
     , arena.allocator());
 
     try std.testing.expectEqual(@as(usize, 0), out_writer.buffered().len);
-    try std.testing.expect(std.mem.indexOf(u8, log_writer.buffered(), "DocumentNotFound") != null);
+    try std.testing.expect(std.mem.find(u8, log_writer.buffered(), "DocumentNotFound") != null);
 }

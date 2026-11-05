@@ -76,10 +76,10 @@ pub fn collect(
 
     const prefix = source[replace_start..cursor];
 
-    var items: std.ArrayListUnmanaged(Item) = .empty;
+    var items: std.ArrayList(Item) = .empty;
     errdefer items.deinit(allocator);
 
-    var candidates: std.ArrayListUnmanaged(LishRegistry.Candidate) = .empty;
+    var candidates: std.ArrayList(LishRegistry.Candidate) = .empty;
     defer candidates.deinit(allocator);
     try registry.collectMatching(prefix, &candidates, allocator);
 
@@ -130,7 +130,7 @@ fn scopeCompletion(
     language: Language,
     allocator: Allocator,
 ) Allocator.Error!?Result {
-    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(allocator);
 
     switch (language) {
@@ -159,7 +159,7 @@ fn scopeCompletion(
     }
 
     const prefix = source[replace_start..cursor];
-    var items: std.ArrayListUnmanaged(Item) = .empty;
+    var items: std.ArrayList(Item) = .empty;
     errdefer items.deinit(allocator);
     for (names.items) |name| {
         if (!std.mem.startsWith(u8, name, prefix)) continue;

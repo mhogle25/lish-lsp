@@ -27,7 +27,7 @@ pub fn collect(
     registry: *const LishRegistry,
     allocator: Allocator,
 ) Allocator.Error![]const []const u8 {
-    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    var names: std.ArrayList([]const u8) = .empty;
     errdefer names.deinit(allocator);
     try collectInto(root, cursor, registry, &names, allocator);
     return names.toOwnedSlice(allocator);
@@ -39,7 +39,7 @@ pub fn collectInto(
     root: *const AstNode,
     cursor: u32,
     registry: *const LishRegistry,
-    names: *std.ArrayListUnmanaged([]const u8),
+    names: *std.ArrayList([]const u8),
     allocator: Allocator,
 ) Allocator.Error!void {
     try walk(root, cursor, registry, names, allocator);
@@ -47,7 +47,7 @@ pub fn collectInto(
 
 /// Append a binding name, skipping duplicates and non-identifier arguments.
 pub fn appendUnique(
-    names: *std.ArrayListUnmanaged([]const u8),
+    names: *std.ArrayList([]const u8),
     name: []const u8,
     allocator: Allocator,
 ) Allocator.Error!void {
@@ -61,7 +61,7 @@ fn walk(
     node: *const AstNode,
     cursor: u32,
     registry: *const LishRegistry,
-    names: *std.ArrayListUnmanaged([]const u8),
+    names: *std.ArrayList([]const u8),
     allocator: Allocator,
 ) Allocator.Error!void {
     // End is inclusive: while typing, the cursor sits at the end of the (often
@@ -107,7 +107,7 @@ fn collectBindings(
     signature: Signature,
     args: []const *const AstNode,
     cursor_arg: ?usize,
-    names: *std.ArrayListUnmanaged([]const u8),
+    names: *std.ArrayList([]const u8),
     allocator: Allocator,
 ) Allocator.Error!void {
     const k = cursor_arg orelse return;
@@ -164,7 +164,7 @@ fn assignRoles(params: []const Param, arg_count: usize, roles: []Param.Role) voi
 
 fn appendArg(
     arg: *const AstNode,
-    names: *std.ArrayListUnmanaged([]const u8),
+    names: *std.ArrayList([]const u8),
     allocator: Allocator,
 ) Allocator.Error!void {
     if (!ast_walk.isBareIdentifier(arg)) return;
@@ -197,7 +197,7 @@ test "let binding is in scope in the body" {
 
     // "(let n 5 (+ :n))": cursor inside the body, on the "n" of ":n".
     const source = "(let n 5 (+ :n))";
-    const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":n").? + 1);
+    const cursor: u32 = @intCast(std.mem.find(u8, source, ":n").? + 1);
     const names = try namesAt(source, cursor, a);
     try testing.expect(has(names, "n"));
 }
@@ -209,7 +209,7 @@ test "later let binding sees earlier ones" {
 
     // "(let a 1 b (+ :a) :b)": cursor in b's value, should see a (not b).
     const source = "(let a 1 b (+ :a) :b)";
-    const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":a").? + 1);
+    const cursor: u32 = @intCast(std.mem.find(u8, source, ":a").? + 1);
     const names = try namesAt(source, cursor, a);
     try testing.expect(has(names, "a"));
     try testing.expect(!has(names, "b"));
@@ -222,7 +222,7 @@ test "map binds name in its body" {
 
     // "(map x [1 2] (* :x 2))": cursor on ":x" inside the body.
     const source = "(map x [1 2] (* :x 2))";
-    const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":x").? + 1);
+    const cursor: u32 = @intCast(std.mem.find(u8, source, ":x").? + 1);
     const names = try namesAt(source, cursor, a);
     try testing.expect(has(names, "x"));
 }
@@ -234,7 +234,7 @@ test "reduce binds both accumulator and item" {
 
     // "(reduce acc 0 it [1 2] (+ :acc :it))": both in scope in the body.
     const source = "(reduce acc 0 it [1 2] (+ :acc :it))";
-    const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":acc").? + 1);
+    const cursor: u32 = @intCast(std.mem.find(u8, source, ":acc").? + 1);
     const names = try namesAt(source, cursor, a);
     try testing.expect(has(names, "acc"));
     try testing.expect(has(names, "it"));
@@ -247,7 +247,7 @@ test "nested forms accumulate scopes" {
 
     // outer let binds `total`, inner map binds `x`; both visible in the inner body.
     const source = "(let total 0 (map x [1 2] (+ :x :total)))";
-    const cursor: u32 = @intCast(std.mem.indexOf(u8, source, ":x").? + 1);
+    const cursor: u32 = @intCast(std.mem.find(u8, source, ":x").? + 1);
     const names = try namesAt(source, cursor, a);
     try testing.expect(has(names, "x"));
     try testing.expect(has(names, "total"));
@@ -262,7 +262,7 @@ test "binding is not in scope in the source argument" {
     // 0, so x is offered, an accepted minor over-offer. But on the name itself
     // (arg0) nothing is in scope.
     const source = "(map x [1] (* 2))";
-    const cursor: u32 = @intCast(std.mem.indexOf(u8, source, "x").?); // on the binding name
+    const cursor: u32 = @intCast(std.mem.find(u8, source, "x").?); // on the binding name
     const names = try namesAt(source, cursor, a);
     try testing.expect(!has(names, "x"));
 }

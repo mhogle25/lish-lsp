@@ -64,7 +64,7 @@ pub fn diagnostics(w: *std.Io.Writer, diags: []const diagnostics_mod.Diagnostic,
         const end = line_table.position(d.end_byte);
         try w.print(
             "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"severity\":{d},\"source\":\"{s}\",\"message\":\"",
-            .{ start.line, start.character, end.line, end.character, @intFromEnum(d.severity), source },
+            .{ start.line, start.character, end.line, end.character, @backingInt(d.severity), source },
         );
         try writeJsonString(w, d.message);
         try w.writeAll("\"}");
@@ -94,9 +94,9 @@ test "hover encodes markdown contents and range" {
     var w = std.Io.Writer.fixed(&buf);
     try hover(&w, "**doc**", .{ .line = 1, .character = 2 }, .{ .line = 1, .character = 7 });
     const out = w.buffered();
-    try testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"markdown\"") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "\"value\":\"**doc**\"") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":1,\"character\":2}") != null);
+    try testing.expect(std.mem.find(u8, out, "\"kind\":\"markdown\"") != null);
+    try testing.expect(std.mem.find(u8, out, "\"value\":\"**doc**\"") != null);
+    try testing.expect(std.mem.find(u8, out, "\"start\":{\"line\":1,\"character\":2}") != null);
 }
 
 test "completionList encodes one item with a shared edit range" {
@@ -111,9 +111,9 @@ test "completionList encodes one item with a shared edit range" {
     }};
     try completionList(&w, &items, .{ .line = 0, .character = 1 }, .{ .line = 0, .character = 2 });
     const out = w.buffered();
-    try testing.expect(std.mem.indexOf(u8, out, "\"label\":\"map\"") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "\"kind\":3") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "\"newText\":\"map \"") != null);
+    try testing.expect(std.mem.find(u8, out, "\"label\":\"map\"") != null);
+    try testing.expect(std.mem.find(u8, out, "\"kind\":3") != null);
+    try testing.expect(std.mem.find(u8, out, "\"newText\":\"map \"") != null);
 }
 
 test "signatureHelp encodes label, params, and active index" {
@@ -122,6 +122,6 @@ test "signatureHelp encodes label, params, and active index" {
     const params = [_][]const u8{ "a", "b" };
     try signatureHelp(&w, .{ .label = "+ a b", .params = &params, .active = 1 });
     const out = w.buffered();
-    try testing.expect(std.mem.indexOf(u8, out, "\"label\":\"+ a b\"") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "\"activeParameter\":1") != null);
+    try testing.expect(std.mem.find(u8, out, "\"label\":\"+ a b\"") != null);
+    try testing.expect(std.mem.find(u8, out, "\"activeParameter\":1") != null);
 }

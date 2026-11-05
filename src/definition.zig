@@ -211,7 +211,7 @@ test "defineMacro jumps a scope ref to its head parameter" {
 
     // "double x | * :x 2 ;": param "x" at byte 7; ":x" body ref names it.
     const source = "double x | * :x 2 ;";
-    const ref_byte: u32 = @intCast(std.mem.indexOf(u8, source, ":x").? + 1); // on the "x"
+    const ref_byte: u32 = @intCast(std.mem.find(u8, source, ":x").? + 1); // on the "x"
     const loc = (try defineMacro(source, ref_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///m.lishmacro", loc.uri);
     try testing.expectEqual(@as(u32, 7), loc.start); // the head "x"
@@ -228,7 +228,7 @@ test "defineMacro resolves a body call to a sibling macro in the same module" {
 
     // "a x | :x ; b y | a :y ;": "a" called inside b's body resolves to a's head.
     const source = "a x | :x ; b y | a :y ;";
-    const call_byte: u32 = @intCast(std.mem.lastIndexOfScalar(u8, source, 'a').?); // the call in b's body
+    const call_byte: u32 = @intCast(std.mem.findScalarLast(u8, source, 'a').?); // the call in b's body
     const loc = (try defineMacro(source, call_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///m.lishmacro", loc.uri);
     try testing.expectEqual(@as(u32, 0), loc.start); // a's head id at byte 0
@@ -244,7 +244,7 @@ test "defineMacro falls back to the workspace index for a cross-file macro" {
 
     // "wrap | shared ;": "shared" is defined in another file.
     const source = "wrap | shared ;";
-    const call_byte: u32 = @intCast(std.mem.indexOf(u8, source, "shared").?);
+    const call_byte: u32 = @intCast(std.mem.find(u8, source, "shared").?);
     const loc = (try defineMacro(source, call_byte, "file:///m.lishmacro", &index, a)) orelse return error.NoDef;
     try testing.expectEqualStrings("file:///other.lishmacro", loc.uri);
 }
@@ -283,7 +283,7 @@ test "defineMacro returns null for a builtin called in a body" {
 
     // "*" is a builtin; nothing to jump to.
     const source = "double x | * :x 2 ;";
-    const star_byte: u32 = @intCast(std.mem.indexOfScalar(u8, source, '*').?);
+    const star_byte: u32 = @intCast(std.mem.findScalar(u8, source, '*').?);
     try testing.expect((try defineMacro(source, star_byte, "file:///m.lishmacro", &index, a)) == null);
 }
 
@@ -297,6 +297,6 @@ test "defineMacro returns null for a scope ref with no matching parameter" {
 
     // ":outer" names no head parameter (it would be an outer binding at runtime).
     const source = "double x | :outer ;";
-    const ref_byte: u32 = @intCast(std.mem.indexOf(u8, source, "outer").?);
+    const ref_byte: u32 = @intCast(std.mem.find(u8, source, "outer").?);
     try testing.expect((try defineMacro(source, ref_byte, "file:///m.lishmacro", &index, a)) == null);
 }

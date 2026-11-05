@@ -69,7 +69,7 @@ pub fn sendError(writer: *std.Io.Writer, id: std.json.Value, code: ErrorCode, me
 
     var code_buf: [16]u8 = undefined;
     var code_w = std.Io.Writer.fixed(&code_buf);
-    try code_w.print("{d}", .{@intFromEnum(code)});
+    try code_w.print("{d}", .{@backingInt(code)});
     const code_str = code_w.buffered();
 
     // Measure the JSON-escaped message without bounding it by a fixed buffer.
@@ -173,7 +173,7 @@ pub fn positionOf(params: ?std.json.Value) ?diagnostics.Position {
 /// `roots`. Precedence follows the spec: `workspaceFolders` (each folder's
 /// `uri`), then the deprecated `rootUri`, then the deprecated `rootPath`. URIs
 /// are decoded to paths; a non-`file://` URI is skipped.
-pub fn collectRoots(allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged([]const u8), params: ?std.json.Value) !void {
+pub fn collectRoots(allocator: std.mem.Allocator, roots: *std.ArrayList([]const u8), params: ?std.json.Value) !void {
     const p = params orelse return;
     if (p != .object) return;
 
@@ -196,7 +196,7 @@ pub fn collectRoots(allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged
     }
 }
 
-fn addRootFromUri(allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged([]const u8), root_uri: []const u8) !void {
+fn addRootFromUri(allocator: std.mem.Allocator, roots: *std.ArrayList([]const u8), root_uri: []const u8) !void {
     const path = (try uri_mod.toPath(allocator, root_uri)) orelse return;
     try roots.append(allocator, path);
 }
@@ -235,7 +235,7 @@ pub fn loadVocabularies(
 
     // 2. Per-project auto-discovery at each workspace root.
     for (roots) |root| {
-        const path = std.fs.path.join(scratch, &.{ root, project_file }) catch continue;
+        const path = std.Io.Dir.path.join(scratch, &.{ root, project_file }) catch continue;
         total += mergeVocabularyFile(name, io, log, registry, scratch, path, false);
     }
 
@@ -261,7 +261,7 @@ pub fn mergeVocabularyFile(name: []const u8, io: std.Io, log: *std.Io.Writer, re
 
 /// Record `initializationOptions.vocabulary` (a string or array of strings) as
 /// host-vocabulary file specs in `specs`. Anything else is ignored.
-pub fn collectVocabularySpecs(allocator: std.mem.Allocator, specs: *std.ArrayListUnmanaged([]const u8), params: ?std.json.Value) !void {
+pub fn collectVocabularySpecs(allocator: std.mem.Allocator, specs: *std.ArrayList([]const u8), params: ?std.json.Value) !void {
     const p = params orelse return;
     if (p != .object) return;
     const opts = p.object.get("initializationOptions") orelse return;
@@ -276,7 +276,7 @@ pub fn collectVocabularySpecs(allocator: std.mem.Allocator, specs: *std.ArrayLis
     }
 }
 
-fn appendSpec(allocator: std.mem.Allocator, specs: *std.ArrayListUnmanaged([]const u8), spec: []const u8) !void {
+fn appendSpec(allocator: std.mem.Allocator, specs: *std.ArrayList([]const u8), spec: []const u8) !void {
     if (spec.len == 0) return;
     try specs.append(allocator, try allocator.dupe(u8, spec));
 }
@@ -285,7 +285,7 @@ fn appendSpec(allocator: std.mem.Allocator, specs: *std.ArrayListUnmanaged([]con
 /// absolute, else joined onto the first workspace root. Null when relative and
 /// no root is known.
 pub fn resolveVocabularyPath(alloc: std.mem.Allocator, roots: []const []const u8, spec: []const u8) !?[]const u8 {
-    if (std.fs.path.isAbsolute(spec)) return try alloc.dupe(u8, spec);
+    if (std.Io.Dir.path.isAbsolute(spec)) return try alloc.dupe(u8, spec);
     if (roots.len == 0) return null;
-    return try std.fs.path.join(alloc, &.{ roots[0], spec });
+    return try std.Io.Dir.path.join(alloc, &.{ roots[0], spec });
 }
