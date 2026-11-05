@@ -23,7 +23,7 @@ jobs:
           path: lish
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: zig build test
         working-directory: lish-lsp
         run: zig build test

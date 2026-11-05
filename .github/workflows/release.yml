@@ -39,10 +39,10 @@ jobs:
           path: lish
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Build
         working-directory: lish-lsp
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=safe
       - name: Stage binary
         working-directory: lish-lsp
         run: |
